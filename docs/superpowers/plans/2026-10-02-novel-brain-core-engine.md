@@ -3599,7 +3599,7 @@ describe("memory and context", () => {
     expect(context.sceneText).toBe(scene.text);
     expect(context.canonicalFacts).toEqual([relevantFact]);
     expect(context.stateRecords).toEqual([relevantState]);
-    expect(context.memory.sceneSummaries).toEqual(memory.scenes);
+    expect(context.memory.scenes).toEqual(memory.scenes);
     expect(context.taskIntent).toBe("Continue the scene.");
   });
 });
@@ -3617,6 +3617,7 @@ Expected: FAIL because the memory modules do not exist.
 import type { Scene } from "../../manuscript/domain/scene";
 import type { DomainEvent } from "../../safety/domain/domainEvent";
 import type { VersionSet } from "../../shared/domain/versioning";
+import { deepFreeze } from "../../shared/domain/immutable";
 
 export interface SceneMemory {
   readonly revisionId: string;
@@ -3650,16 +3651,16 @@ export function rebuildMemoryProjection(
   for (const scene of scenes) {
     sourceRevisionSet[scene.id] = scene.currentRevisionId;
     if (committedSceneIds.size > 0 && !committedSceneIds.has(scene.id)) continue;
-    sceneMemories[scene.id] = Object.freeze({
+    sceneMemories[scene.id] = {
       revisionId: scene.currentRevisionId,
       summary: scene.text,
-    });
+    };
   }
 
-  return Object.freeze({
+  return deepFreeze({
     novelId,
-    sourceRevisionSet: Object.freeze(sourceRevisionSet),
-    scenes: Object.freeze(sceneMemories),
+    sourceRevisionSet,
+    scenes: sceneMemories,
   });
 }
 
@@ -3667,9 +3668,11 @@ export function isMemoryProjectionStale(
   projection: MemoryProjection,
   versionSet: VersionSet,
 ): boolean {
-  return Object.entries(versionSet).some(([name, reference]) => {
-    const projectedRevisionId = projection.sourceRevisionSet[reference.objectId];
-    return name === "scene" && projectedRevisionId !== reference.revisionId;
+  return Object.values(versionSet).some(reference => {
+    return (
+      reference.aggregateType === "Scene" &&
+      projection.sourceRevisionSet[reference.objectId] !== reference.revisionId
+    );
   });
 }
 ```
