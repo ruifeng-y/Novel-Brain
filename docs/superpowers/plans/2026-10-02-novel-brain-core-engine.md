@@ -1659,7 +1659,7 @@ export type CandidateStatus =
   | "outdated"
   | "archived";
 
-export type CandidateChange =
+export type CandidateAtomicChange =
   | { readonly type: "text"; readonly sceneId: DomainId; readonly text: string }
   | {
       readonly type: "structured_state";
@@ -1677,6 +1677,13 @@ export type CandidateChange =
       readonly targetSpan: TargetSpan;
       readonly replacement: string;
     };
+
+export interface CompositeCandidateChange {
+  readonly type: "composite";
+  readonly changes: readonly CandidateAtomicChange[];
+}
+
+export type CandidateChange = CandidateAtomicChange | CompositeCandidateChange;
 
 export interface Candidate {
   readonly id: DomainId;
@@ -1708,6 +1715,9 @@ export function createCandidate(input: {
   if (!input.novelId) throw new Error("novelId is required");
   if (Object.keys(input.basedOnVersionSet).length === 0) {
     throw new Error("basedOnVersionSet must contain at least one dependency");
+  }
+  if (input.change.type === "composite" && input.change.changes.length === 0) {
+    throw new Error("composite change requires at least one atomic change");
   }
 
   return Object.freeze({
@@ -2964,6 +2974,11 @@ function cloneValue<T>(value: T): T {
 }
 
 function assertRequestedChange(change: RuntimeRequest["requestedChange"]): void {
+  if (change.type === "composite") {
+    if (change.changes.length === 0) throw new Error("composite change requires at least one atomic change");
+    for (const atomicChange of change.changes) assertRequestedChange(atomicChange);
+    return;
+  }
   if (change.type === "text") {
     if (!change.sceneId || !change.text) throw new Error("text change requires sceneId and text");
     return;
@@ -3011,7 +3026,7 @@ export class DeterministicRuntime implements RuntimeAdapter {
 
 Run: `npm test -- --run tests/production/runtimeAdapter.test.ts`
 
-Expected: PASS with 5 runtime tests.
+Expected: PASS with 6 runtime tests.
 
 - [ ] **Step 5: Commit**
 
@@ -3245,6 +3260,8 @@ Expected: FAIL because `commitCandidate` does not exist.
 
 - [ ] **Step 3: Implement the commit application service**
 
+The service must flatten a composite candidate into atomic changes, preflight every target and version dependency before mutation, prepare all resulting revisions and events, and apply them as one NarrativeCommit. Any missing object, repository failure, unsupported dependency, or event persistence failure must leave a failed NarrativeCommit record. If event persistence fails after canonical writes, restore the prepared original snapshots through the repositories on a best-effort basis.
+
 ```ts
 import type { RevisionedRepository, Repository } from "../../shared/application/repository";
 import type { Candidate } from "../../production/domain/candidate";
@@ -3448,7 +3465,7 @@ export async function commitCandidate(input: {
 
 Run: `npm test -- --run tests/app/coCreationLoop.test.ts`
 
-Expected: PASS with 2 commit service tests.
+Expected: PASS with 10 commit service tests.
 
 - [ ] **Step 5: Commit**
 
@@ -4201,7 +4218,7 @@ const freeFormRecordSchema = z.custom<Record<string, unknown>>(
   value => typeof value === "object" && value !== null && !Array.isArray(value),
   { message: "Expected an object" },
 );
-const candidateChangeSchema = z.discriminatedUnion("type", [
+const atomicCandidateChangeSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text"), sceneId: z.string().min(1), text: z.string().min(1) }),
   z.object({
     type: z.literal("structured_state"),
@@ -4222,6 +4239,13 @@ const candidateChangeSchema = z.discriminatedUnion("type", [
       sourceContentHash: z.string().min(1),
     }),
     replacement: z.string().min(1),
+  }),
+]);
+const candidateChangeSchema = z.union([
+  atomicCandidateChangeSchema,
+  z.object({
+    type: z.literal("composite"),
+    changes: z.array(atomicCandidateChangeSchema).min(1),
   }),
 ]);
 

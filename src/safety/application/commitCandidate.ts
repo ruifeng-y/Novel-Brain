@@ -1,6 +1,14 @@
 import type { Repository, RevisionedRepository } from "../../shared/application/repository";
-import { createVersionReference, type VersionSet } from "../../shared/domain/versioning";
-import type { Candidate } from "../../production/domain/candidate";
+import {
+  createVersionReference,
+  type VersionReference,
+  type VersionSet,
+} from "../../shared/domain/versioning";
+import type {
+  Candidate,
+  CandidateAtomicChange,
+  CandidateChange,
+} from "../../production/domain/candidate";
 import type { ValidationRun } from "../../production/domain/validationRun";
 import type { ReviewDecision } from "../../production/domain/reviewDecision";
 import {
@@ -15,10 +23,11 @@ import { replaceStateRecord } from "../../narrative/state/domain/stateRecord";
 import {
   createNarrativeCommit,
   markNarrativeCommitCommitted,
+  markNarrativeCommitFailed,
   markNarrativeCommitStale,
   type NarrativeCommit,
 } from "../domain/narrativeCommit";
-import { createDomainEvent } from "../domain/domainEvent";
+import { createDomainEvent, type DomainEvent } from "../domain/domainEvent";
 import type { EventStore } from "../infrastructure/eventStore";
 
 export interface CommitCandidateRepositories {
@@ -41,23 +50,257 @@ export interface CommitCandidateInput {
   readonly now: Date;
 }
 
+type SupportedVersionType = "Scene" | "CanonicalFact" | "StateRecord";
+
+class StaleDependencyError extends Error {
+  constructor(public readonly dependencyName: string) {
+    super(`Stale dependency: ${dependencyName}`);
+    this.name = "StaleDependencyError";
+  }
+}
+
+class UnsupportedDependencyError extends Error {
+  constructor(public readonly dependencyType: string) {
+    super(`Unsupported version dependency type: ${dependencyType}`);
+    this.name = "UnsupportedDependencyError";
+  }
+}
+
+type PreparedSceneChange = {
+  readonly kind: "scene";
+  readonly original: Scene;
+  readonly next: Scene;
+  readonly event: DomainEvent;
+  readonly resultKey: string;
+  readonly resultReference: VersionReference;
+};
+
+type PreparedCanonicalChange = {
+  readonly kind: "canonicalFact";
+  readonly original: CanonicalFact;
+  readonly next: CanonicalFact;
+  readonly event: DomainEvent;
+  readonly resultKey: string;
+  readonly resultReference: VersionReference;
+};
+
+type PreparedStateChange = {
+  readonly kind: "stateRecord";
+  readonly original: StateRecord;
+  readonly next: StateRecord;
+  readonly event: DomainEvent;
+  readonly resultKey: string;
+  readonly resultReference: VersionReference;
+};
+
+type PreparedChange = PreparedSceneChange | PreparedCanonicalChange | PreparedStateChange;
+
+function atomicChanges(change: CandidateChange): readonly CandidateAtomicChange[] {
+  return change.type === "composite" ? change.changes : [change];
+}
+
+function targetKey(change: CandidateAtomicChange): string {
+  if (change.type === "text" || change.type === "local_text") {
+    return `Scene:${change.sceneId}`;
+  }
+  if (change.type === "canonical_fact") {
+    return `CanonicalFact:${change.canonicalFactId}`;
+  }
+  return `StateRecord:${change.stateRecordId}`;
+}
+
+function resultKeyFor(kind: PreparedChange["kind"], objectId: string, used: Set<string>): string {
+  const base = kind === "scene" ? "scene" : kind === "canonicalFact" ? "canonicalFact" : "stateRecord";
+  let key = base;
+  let suffix = 2;
+  while (used.has(key)) key = `${base}-${suffix++}`;
+  used.add(key);
+  return key;
+}
+
+function assertSupportedDependencyType(aggregateType: string): asserts aggregateType is SupportedVersionType {
+  if (aggregateType !== "Scene" && aggregateType !== "CanonicalFact" && aggregateType !== "StateRecord") {
+    throw new UnsupportedDependencyError(aggregateType);
+  }
+}
+
 async function assertDependenciesAreCurrent(
   repositories: CommitCandidateRepositories,
   versionSet: VersionSet,
 ): Promise<void> {
   for (const [dependencyName, reference] of Object.entries(versionSet)) {
-    let currentRevisionId: string | undefined;
+    assertSupportedDependencyType(reference.aggregateType);
 
+    let currentRevisionId: string | undefined;
     if (reference.aggregateType === "Scene") {
       currentRevisionId = (await repositories.scenes.findById(reference.objectId))?.currentRevisionId;
     } else if (reference.aggregateType === "CanonicalFact") {
       currentRevisionId = (await repositories.canonicalFacts.findById(reference.objectId))?.currentRevisionId;
-    } else if (reference.aggregateType === "StateRecord") {
+    } else {
       currentRevisionId = (await repositories.stateRecords.findById(reference.objectId))?.currentRevisionId;
     }
 
+    if (currentRevisionId === undefined) {
+      throw new Error(`Missing version dependency object: ${dependencyName}`);
+    }
     if (currentRevisionId !== reference.revisionId) {
-      throw new Error(`Stale dependency: ${dependencyName}`);
+      throw new StaleDependencyError(dependencyName);
+    }
+  }
+}
+
+function assertTargetVersionDependency(
+  change: CandidateAtomicChange,
+  versionSet: VersionSet,
+): VersionReference {
+  const key = targetKey(change);
+  const [aggregateType, objectId] = key.split(":") as [SupportedVersionType, string];
+  const reference = Object.values(versionSet).find(
+    candidateReference =>
+      candidateReference.aggregateType === aggregateType &&
+      candidateReference.objectId === objectId,
+  );
+  if (!reference) throw new Error(`Missing target version dependency: ${key}`);
+  return reference;
+}
+
+async function prepareChange(
+  repositories: CommitCandidateRepositories,
+  candidate: Candidate,
+  change: CandidateAtomicChange,
+  commitId: string,
+  now: Date,
+  usedResultKeys: Set<string>,
+): Promise<PreparedChange> {
+  assertTargetVersionDependency(change, candidate.basedOnVersionSet);
+
+  if (change.type === "text" || change.type === "local_text") {
+    const original = await repositories.scenes.findById(change.sceneId);
+    if (!original) throw new Error(`Scene not found: ${change.sceneId}`);
+    const nextRevisionId = `${original.currentRevisionId}:${commitId}`;
+    const nextText =
+      change.type === "text"
+        ? change.text
+        : replaceTargetSpan({
+            scene: original,
+            target: change.targetSpan,
+            replacement: change.replacement,
+          });
+    const nextSpanAnchors =
+      change.type === "local_text"
+        ? {
+            ...original.spanAnchors,
+            [change.targetSpan.anchorId]: change.replacement,
+          }
+        : {};
+    const next = commitSceneText({
+      scene: original,
+      text: nextText,
+      spanAnchors: nextSpanAnchors,
+      revisionId: nextRevisionId,
+      commitId,
+      updatedAt: now,
+    });
+    const resultKey = resultKeyFor("scene", original.id, usedResultKeys);
+    return {
+      kind: "scene",
+      original,
+      next,
+      resultKey,
+      resultReference: createVersionReference("Scene", original.id, nextRevisionId),
+      event: createDomainEvent({
+        eventId: `event:${commitId}:${original.id}:${resultKey}`,
+        name: "SceneCommitted",
+        context: "manuscript",
+        novelId: candidate.novelId,
+        objectId: original.id,
+        revisionId: nextRevisionId,
+        commitId,
+        payload: { candidateId: candidate.id },
+        occurredAt: now,
+      }),
+    };
+  }
+
+  if (change.type === "canonical_fact") {
+    const original = await repositories.canonicalFacts.findById(change.canonicalFactId);
+    if (!original) throw new Error(`Canonical fact not found: ${change.canonicalFactId}`);
+    const nextRevisionId = `${original.currentRevisionId}:${commitId}`;
+    const next = replaceCanonicalFact({
+      fact: original,
+      content: change.content,
+      revisionId: nextRevisionId,
+      commitId,
+      updatedAt: now,
+    });
+    const resultKey = resultKeyFor("canonicalFact", original.id, usedResultKeys);
+    return {
+      kind: "canonicalFact",
+      original,
+      next,
+      resultKey,
+      resultReference: createVersionReference("CanonicalFact", original.id, nextRevisionId),
+      event: createDomainEvent({
+        eventId: `event:${commitId}:${original.id}:${resultKey}`,
+        name: "CanonicalFactChanged",
+        context: "narrative_state",
+        novelId: candidate.novelId,
+        objectId: original.id,
+        revisionId: nextRevisionId,
+        commitId,
+        payload: { candidateId: candidate.id },
+        occurredAt: now,
+      }),
+    };
+  }
+
+  const original = await repositories.stateRecords.findById(change.stateRecordId);
+  if (!original) throw new Error(`State record not found: ${change.stateRecordId}`);
+  const nextRevisionId = `${original.currentRevisionId}:${commitId}`;
+  const next = replaceStateRecord({
+    record: original,
+    content: change.content,
+    revisionId: nextRevisionId,
+    commitId,
+    updatedAt: now,
+  });
+  const resultKey = resultKeyFor("stateRecord", original.id, usedResultKeys);
+  return {
+    kind: "stateRecord",
+    original,
+    next,
+    resultKey,
+    resultReference: createVersionReference("StateRecord", original.id, nextRevisionId),
+    event: createDomainEvent({
+      eventId: `event:${commitId}:${original.id}:${resultKey}`,
+      name:
+        next.type === "character_state"
+          ? "CharacterStateChanged"
+          : next.type === "world_state"
+            ? "WorldStateChanged"
+            : "PlotStateChanged",
+      context: "narrative_state",
+      novelId: candidate.novelId,
+      objectId: original.id,
+      revisionId: nextRevisionId,
+      commitId,
+      payload: { candidateId: candidate.id },
+      occurredAt: now,
+    }),
+  };
+}
+
+async function restoreOriginals(
+  repositories: CommitCandidateRepositories,
+  prepared: readonly PreparedChange[],
+): Promise<void> {
+  for (const change of prepared) {
+    try {
+      if (change.kind === "scene") await repositories.scenes.save(change.original);
+      if (change.kind === "canonicalFact") await repositories.canonicalFacts.save(change.original);
+      if (change.kind === "stateRecord") await repositories.stateRecords.save(change.original);
+    } catch {
+      // Best effort compensation; the failed NarrativeCommit remains the evidence.
     }
   }
 }
@@ -71,7 +314,7 @@ export async function commitCandidate(input: {
   if (!candidate) throw new Error(`Candidate not found: ${input.input.candidateId}`);
   if (candidate.status !== "selected") throw new Error("Only a selected candidate can be committed");
 
-  let commit = createNarrativeCommit({
+  const pendingCommit = createNarrativeCommit({
     id: input.input.commitId,
     novelId: candidate.novelId,
     candidate,
@@ -79,124 +322,65 @@ export async function commitCandidate(input: {
     reviewDecision: input.input.reviewDecision,
     createdAt: input.input.now,
   });
+  await input.repositories.narrativeCommits.save(pendingCommit);
 
+  const changes = atomicChanges(candidate.change);
+  const seenTargets = new Set<string>();
+  for (const change of changes) {
+    const key = targetKey(change);
+    if (seenTargets.has(key)) throw new Error(`Duplicate candidate change target: ${key}`);
+    seenTargets.add(key);
+  }
+
+  const prepared: PreparedChange[] = [];
   try {
     await assertDependenciesAreCurrent(input.repositories, candidate.basedOnVersionSet);
+    const usedResultKeys = new Set<string>();
+    for (const change of changes) {
+      prepared.push(
+        await prepareChange(
+          input.repositories,
+          candidate,
+          change,
+          pendingCommit.id,
+          input.input.now,
+          usedResultKeys,
+        ),
+      );
+    }
+
+    for (const change of prepared) {
+      if (change.kind === "scene") await input.repositories.scenes.save(change.next);
+      if (change.kind === "canonicalFact") await input.repositories.canonicalFacts.save(change.next);
+      if (change.kind === "stateRecord") await input.repositories.stateRecords.save(change.next);
+    }
+
+    const resultingVersionSet: Record<string, VersionReference> = {};
+    for (const change of prepared) resultingVersionSet[change.resultKey] = change.resultReference;
+
+    for (const change of prepared) await input.eventStore.append(change.event);
+
+    const committed = markNarrativeCommitCommitted({
+      commit: pendingCommit,
+      resultingVersionSet: Object.freeze(resultingVersionSet),
+      committedAt: input.input.now,
+    });
+    await input.repositories.narrativeCommits.save(committed);
+    return committed;
   } catch (error) {
-    commit = markNarrativeCommitStale(commit, input.input.now);
-    await input.repositories.narrativeCommits.save(commit);
+    await restoreOriginals(input.repositories, prepared);
+    if (error instanceof StaleDependencyError) {
+      const stale = markNarrativeCommitStale(pendingCommit, input.input.now);
+      await input.repositories.narrativeCommits.save(stale);
+      throw error;
+    }
+    const reason = error instanceof Error ? error.message : "Unknown commit failure";
+    const failed = markNarrativeCommitFailed({
+      commit: pendingCommit,
+      reason,
+      failedAt: input.input.now,
+    });
+    await input.repositories.narrativeCommits.save(failed);
     throw error;
   }
-
-  const resultingVersionSet: Record<string, ReturnType<typeof createVersionReference>> = {};
-  let eventName:
-    | "SceneCommitted"
-    | "CanonicalFactChanged"
-    | "CharacterStateChanged"
-    | "WorldStateChanged"
-    | "PlotStateChanged";
-  let objectId = "";
-  let revisionId = "";
-
-  if (candidate.change.type === "text" || candidate.change.type === "local_text") {
-    const scene = await input.repositories.scenes.findById(candidate.change.sceneId);
-    if (!scene) throw new Error(`Scene not found: ${candidate.change.sceneId}`);
-    const nextRevisionId = `${scene.currentRevisionId}:${input.input.commitId}`;
-    const nextText =
-      candidate.change.type === "text"
-        ? candidate.change.text
-        : replaceTargetSpan({
-            scene,
-            target: candidate.change.targetSpan,
-            replacement: candidate.change.replacement,
-          });
-    const nextSpanAnchors =
-      candidate.change.type === "local_text"
-        ? {
-            ...scene.spanAnchors,
-            [candidate.change.targetSpan.anchorId]: candidate.change.replacement,
-          }
-        : {};
-
-    const nextScene = commitSceneText({
-      scene,
-      text: nextText,
-      spanAnchors: nextSpanAnchors,
-      revisionId: nextRevisionId,
-      commitId: commit.id,
-      updatedAt: input.input.now,
-    });
-    await input.repositories.scenes.save(nextScene);
-    resultingVersionSet.scene = createVersionReference("Scene", nextScene.id, nextRevisionId);
-    eventName = "SceneCommitted";
-    objectId = nextScene.id;
-    revisionId = nextRevisionId;
-  } else if (candidate.change.type === "canonical_fact") {
-    const fact = await input.repositories.canonicalFacts.findById(candidate.change.canonicalFactId);
-    if (!fact) throw new Error(`Canonical fact not found: ${candidate.change.canonicalFactId}`);
-    const nextRevisionId = `${fact.currentRevisionId}:${commit.id}`;
-    const nextFact = replaceCanonicalFact({
-      fact,
-      content: candidate.change.content,
-      revisionId: nextRevisionId,
-      commitId: commit.id,
-      updatedAt: input.input.now,
-    });
-    await input.repositories.canonicalFacts.save(nextFact);
-    resultingVersionSet.canonicalFact = createVersionReference(
-      "CanonicalFact",
-      nextFact.id,
-      nextRevisionId,
-    );
-    eventName = "CanonicalFactChanged";
-    objectId = nextFact.id;
-    revisionId = nextRevisionId;
-  } else {
-    const record = await input.repositories.stateRecords.findById(candidate.change.stateRecordId);
-    if (!record) throw new Error(`State record not found: ${candidate.change.stateRecordId}`);
-    const nextRevisionId = `${record.currentRevisionId}:${commit.id}`;
-    const nextRecord = replaceStateRecord({
-      record,
-      content: candidate.change.content,
-      revisionId: nextRevisionId,
-      commitId: commit.id,
-      updatedAt: input.input.now,
-    });
-    await input.repositories.stateRecords.save(nextRecord);
-    resultingVersionSet.stateRecord = createVersionReference(
-      "StateRecord",
-      nextRecord.id,
-      nextRevisionId,
-    );
-    eventName =
-      nextRecord.type === "character_state"
-        ? "CharacterStateChanged"
-        : nextRecord.type === "world_state"
-          ? "WorldStateChanged"
-          : "PlotStateChanged";
-    objectId = nextRecord.id;
-    revisionId = nextRevisionId;
-  }
-
-  commit = markNarrativeCommitCommitted({
-    commit,
-    resultingVersionSet: Object.freeze(resultingVersionSet),
-    committedAt: input.input.now,
-  });
-  await input.repositories.narrativeCommits.save(commit);
-  await input.eventStore.append(
-    createDomainEvent({
-      eventId: `event:${commit.id}:${objectId}`,
-      name: eventName,
-      context: eventName === "SceneCommitted" ? "manuscript" : "narrative_state",
-      novelId: candidate.novelId,
-      objectId,
-      revisionId,
-      commitId: commit.id,
-      payload: { candidateId: candidate.id },
-      occurredAt: input.input.now,
-    }),
-  );
-
-  return commit;
 }

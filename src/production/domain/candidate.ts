@@ -12,7 +12,7 @@ export type CandidateStatus =
   | "outdated"
   | "archived";
 
-export type CandidateChange =
+export type CandidateAtomicChange =
   | { readonly type: "text"; readonly sceneId: DomainId; readonly text: string }
   | {
       readonly type: "structured_state";
@@ -30,6 +30,13 @@ export type CandidateChange =
       readonly targetSpan: TargetSpan;
       readonly replacement: string;
     };
+
+export interface CompositeCandidateChange {
+  readonly type: "composite";
+  readonly changes: readonly CandidateAtomicChange[];
+}
+
+export type CandidateChange = CandidateAtomicChange | CompositeCandidateChange;
 
 export interface Candidate {
   readonly id: DomainId;
@@ -61,6 +68,9 @@ export function createCandidate(input: {
   if (!input.novelId) throw new Error("novelId is required");
   if (Object.keys(input.basedOnVersionSet).length === 0) {
     throw new Error("basedOnVersionSet must contain at least one dependency");
+  }
+  if (input.change.type === "composite" && input.change.changes.length === 0) {
+    throw new Error("composite change requires at least one atomic change");
   }
 
   return Object.freeze({

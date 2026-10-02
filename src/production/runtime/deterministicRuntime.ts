@@ -24,6 +24,11 @@ function cloneValue<T>(value: T): T {
 }
 
 function assertRequestedChange(change: RuntimeRequest["requestedChange"]): void {
+  if (change.type === "composite") {
+    if (change.changes.length === 0) throw new Error("composite change requires at least one atomic change");
+    for (const atomicChange of change.changes) assertRequestedChange(atomicChange);
+    return;
+  }
   if (change.type === "text") {
     if (!change.sceneId || !change.text) throw new Error("text change requires sceneId and text");
     return;
