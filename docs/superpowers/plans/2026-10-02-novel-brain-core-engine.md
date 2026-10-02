@@ -1306,11 +1306,6 @@ import {
   startGenerationTask,
 } from "../../src/production/domain/generationTask";
 import { createVersionReference, createVersionSet } from "../../src/shared/domain/versioning";
-import type { Candidate } from "../../src/production/domain/candidate";
-import type { Scene } from "../../src/manuscript/domain/scene";
-import type { CanonicalFact } from "../../src/narrative/canon/domain/canonicalFact";
-import type { StateRecord } from "../../src/narrative/state/domain/stateRecord";
-import type { NarrativeCommit } from "../../src/safety/domain/narrativeCommit";
 
 const now = new Date("2026-10-02T00:00:00.000Z");
 const sceneVersion = createVersionReference("Scene", "scene-1", "scene-rev-1");
@@ -1319,7 +1314,7 @@ function task() {
   return createGenerationTask({
     id: "task-1",
     novelId: "novel-1",
-    operation: "scene_rewrite",
+    operation: "rewrite",
     targetSceneId: "scene-1",
     intent: "Rewrite the second paragraph with more tension.",
     basedOnVersionSet: createVersionSet({ scene: sceneVersion }),
@@ -1331,7 +1326,7 @@ describe("GenerationTask", () => {
   it("starts as draft with a precise based-on version set", () => {
     expect(task()).toMatchObject({
       status: "draft",
-      operation: "scene_rewrite",
+      operation: "rewrite",
       basedOnVersionSet: { scene: sceneVersion },
       candidateIds: [],
     });
@@ -2686,7 +2681,7 @@ describe("runtime abstraction", () => {
     const task = createGenerationTask({
       id: "task-1",
       novelId: "novel-1",
-      operation: "scene_rewrite",
+      operation: "rewrite",
       targetSceneId: "scene-1",
       intent: "Rewrite with more tension.",
       basedOnVersionSet: createVersionSet({
@@ -3832,7 +3827,7 @@ describe("core engine API", () => {
       url: "/novels/novel-1/generation-tasks",
       payload: {
         id: "task-1",
-        operation: "scene_rewrite",
+        operation: "rewrite",
         targetSceneId: "scene-1",
         intent: "Rewrite with more tension.",
         basedOnVersionSet: {
