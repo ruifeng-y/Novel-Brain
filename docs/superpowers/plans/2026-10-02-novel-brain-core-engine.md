@@ -67,6 +67,7 @@ Deferred to separate plans:
 package.json
 tsconfig.json
 vitest.config.ts
+.gitignore
 docker-compose.yml
 prisma/
   schema.prisma
@@ -169,6 +170,7 @@ Each domain file owns one aggregate or value-object family. Application files or
 **Files:**
 
 - Create: `package.json`
+- Create: `.gitignore`
 - Create: `tsconfig.json`
 - Create: `vitest.config.ts`
 - Create: `src/shared/domain/ids.ts`
@@ -206,8 +208,8 @@ Each domain file owns one aggregate or value-object family. Application files or
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": false,
