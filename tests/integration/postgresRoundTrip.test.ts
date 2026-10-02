@@ -1,13 +1,17 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { PrismaClient } from "@prisma/client";
+import { createNovel, type Novel } from "../../src/narrative/novel/domain/novel";
 import { commitSceneText, createScene } from "../../src/manuscript/domain/scene";
 import {
+  PrismaRepository,
   PrismaEventStore,
   PrismaRevisionedRepository,
 } from "../../src/shared/infrastructure/prismaRepositories";
 import { createDomainEvent } from "../../src/safety/domain/domainEvent";
 import type { Scene } from "../../src/manuscript/domain/scene";
 
+process.env.DATABASE_URL ??=
+  "postgresql://novelbrain:novelbrain@localhost:5434/novelbrain?schema=public";
 const prisma = new PrismaClient();
 
 describe("PostgreSQL persistence", () => {
@@ -53,6 +57,97 @@ describe("PostgreSQL persistence", () => {
     );
   });
 
+  it("deep-clones and freezes repository snapshots and supports Novel fallback ownership", async () => {
+    interface PlainEntity {
+      id: string;
+      novelId: string;
+      title: string;
+      nested: { values: string[] };
+    }
+    const repository = new PrismaRepository<PlainEntity>(
+      prisma,
+      "PlainEntity",
+      payload =>
+        ({
+          id: payload.id as string,
+          novelId: payload.novelId as string,
+          title: payload.title as string,
+          nested: payload.nested as PlainEntity["nested"],
+        }) as PlainEntity,
+    );
+    const input: PlainEntity = {
+      id: "plain-1",
+      novelId: "novel-plain",
+      title: "Plain",
+      nested: { values: ["original"] },
+    };
+    await repository.save(input);
+    input.nested.values.push("mutated-input");
+    const loaded = await repository.findById("plain-1");
+    expect(loaded?.nested.values).toEqual(["original"]);
+    expect(() => loaded?.nested.values.push("mutated-read")).toThrow();
+
+    const novelRepository = new PrismaRepository<Novel>(
+      prisma,
+      "Novel",
+      payload =>
+        ({
+          ...payload,
+          createdAt: new Date(payload.createdAt as string),
+          updatedAt: new Date(payload.updatedAt as string),
+        }) as Novel,
+    );
+    const novel = createNovel({
+      id: "novel-fallback",
+      authorId: "author-1",
+      title: "Fallback Novel",
+      createdAt: new Date("2026-10-02T00:00:00.000Z"),
+    });
+    await novelRepository.save(novel);
+    await expect(novelRepository.listByNovel(novel.id)).resolves.toHaveLength(1);
+  });
+
+  it("compares revision payloads independently of key order and rejects conflicting reuse", async () => {
+    interface RevisionEntity {
+      id: string;
+      novelId: string;
+      currentRevisionId: string;
+      content: { first: number; nested: { left: number; right: number } };
+    }
+    const repository = new PrismaRevisionedRepository<RevisionEntity>(
+      prisma,
+      "RevisionEntity",
+      payload =>
+        ({
+          id: payload.id as string,
+          novelId: payload.novelId as string,
+          currentRevisionId: payload.currentRevisionId as string,
+          content: payload.content as RevisionEntity["content"],
+        }) as RevisionEntity,
+    );
+    await repository.save({
+      id: "revision-order",
+      novelId: "novel-order",
+      currentRevisionId: "rev-1",
+      content: { first: 1, nested: { left: 2, right: 3 } },
+    });
+    await repository.save({
+      id: "revision-order",
+      novelId: "novel-order",
+      currentRevisionId: "rev-1",
+      content: { nested: { right: 3, left: 2 }, first: 1 },
+    });
+    await expect(
+      repository.save({
+        id: "revision-order",
+        novelId: "novel-order",
+        currentRevisionId: "rev-1",
+        content: { first: 1, nested: { left: 2, right: 4 } },
+      }),
+    ).rejects.toThrow("Revision already exists: revision-order:rev-1");
+    expect((await repository.getRevision("revision-order", "rev-1"))?.content.nested.right).toBe(3);
+  });
+
   it("round-trips domain events with append-only identity", async () => {
     const store = new PrismaEventStore(prisma);
     const event = createDomainEvent({
@@ -69,7 +164,20 @@ describe("PostgreSQL persistence", () => {
 
     await store.append(event);
     const events = await store.listByNovel("novel-1");
-    expect(events).toEqual([event]);
+    const secondEvent = createDomainEvent({
+      eventId: "event-2",
+      name: "CharacterStateChanged",
+      context: "narrative_state",
+      novelId: "novel-1",
+      objectId: "state-1",
+      revisionId: "state-rev-1",
+      commitId: "commit-1",
+      payload: { condition: "injured" },
+      occurredAt: new Date("2026-10-02T00:00:01.000Z"),
+    });
+    await store.append(secondEvent);
+    const orderedEvents = await store.listByNovel("novel-1");
+    expect(orderedEvents.map(item => item.eventId)).toEqual(["event-1", "event-2"]);
     await expect(store.append(event)).rejects.toThrow("Unique constraint failed");
   });
 });

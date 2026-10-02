@@ -2,6 +2,7 @@ import type { Prisma, PrismaClient } from "@prisma/client";
 import type { Repository, Revisioned, RevisionedRepository } from "../application/repository";
 import type { DomainEvent } from "../../safety/domain/domainEvent";
 import type { EventStore } from "../../safety/infrastructure/eventStore";
+import { deepFreeze } from "../domain/immutable";
 
 type Payload = Record<string, unknown>;
 
@@ -13,12 +14,41 @@ function serialize<T>(entity: T): Payload {
   return JSON.parse(JSON.stringify(entity)) as Payload;
 }
 
+function cloneValue<T>(value: T): T {
+  if (value instanceof Date) return new Date(value.getTime()) as T;
+  if (Array.isArray(value)) return value.map(cloneValue) as T;
+  if (value !== null && typeof value === "object") {
+    const clone = Object.create(Object.getPrototypeOf(value)) as Record<string, unknown>;
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      clone[key] = cloneValue(nested);
+    }
+    return clone as T;
+  }
+  return value;
+}
+
+function snapshot<T>(value: T): T {
+  return deepFreeze(cloneValue(value));
+}
+
+function canonicalize(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(canonicalize);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([key, nested]) => [key, canonicalize(nested)]),
+    );
+  }
+  return value;
+}
+
 function cloneJsonPayload(payload: unknown): Payload {
   return JSON.parse(JSON.stringify(payload)) as Payload;
 }
 
 function samePayload(left: unknown, right: unknown): boolean {
-  return JSON.stringify(left) === JSON.stringify(right);
+  return JSON.stringify(canonicalize(left)) === JSON.stringify(canonicalize(right));
 }
 
 export class PrismaRepository<T extends { id: string; novelId?: string }>
@@ -56,7 +86,7 @@ export class PrismaRepository<T extends { id: string; novelId?: string }>
     const record = await this.prisma.currentObject.findFirst({
       where: { aggregateType: this.aggregateType, objectId: id },
     });
-    return record ? this.revive(record.payload as Payload) : undefined;
+    return record ? snapshot(this.revive(record.payload as Payload)) : undefined;
   }
 
   async listByNovel(novelId: string): Promise<readonly T[]> {
@@ -64,7 +94,7 @@ export class PrismaRepository<T extends { id: string; novelId?: string }>
       where: { aggregateType: this.aggregateType, novelId },
       orderBy: { objectId: "asc" },
     });
-    return records.map(record => this.revive(record.payload as Payload));
+    return records.map(record => snapshot(this.revive(record.payload as Payload)));
   }
 }
 
@@ -132,7 +162,7 @@ export class PrismaRevisionedRepository<T extends Revisioned<T>>
     const record = await this.prisma.currentObject.findFirst({
       where: { aggregateType: this.aggregateType, objectId: id },
     });
-    return record ? this.revive(record.payload as Payload) : undefined;
+    return record ? snapshot(this.revive(record.payload as Payload)) : undefined;
   }
 
   async getRevision(id: string, revisionId: string): Promise<T | undefined> {
@@ -145,7 +175,7 @@ export class PrismaRevisionedRepository<T extends Revisioned<T>>
         },
       },
     });
-    return record ? this.revive(record.payload as Payload) : undefined;
+    return record ? snapshot(this.revive(record.payload as Payload)) : undefined;
   }
 
   async listByNovel(novelId: string): Promise<readonly T[]> {
@@ -153,7 +183,7 @@ export class PrismaRevisionedRepository<T extends Revisioned<T>>
       where: { aggregateType: this.aggregateType, novelId },
       orderBy: { objectId: "asc" },
     });
-    return records.map(record => this.revive(record.payload as Payload));
+    return records.map(record => snapshot(this.revive(record.payload as Payload)));
   }
 }
 
@@ -181,16 +211,18 @@ export class PrismaEventStore implements EventStore {
       where: { novelId },
       orderBy: { sequence: "asc" },
     });
-    return records.map(record => ({
-      eventId: record.eventId,
-      name: record.name as DomainEvent["name"],
-      context: record.context as DomainEvent["context"],
-      novelId: record.novelId,
-      objectId: record.objectId,
-      revisionId: record.revisionId,
-      commitId: record.commitId ?? undefined,
-      payload: record.payload as unknown as DomainEvent["payload"],
-      occurredAt: record.occurredAt,
-    }));
+    return records.map(record =>
+      snapshot({
+        eventId: record.eventId,
+        name: record.name as DomainEvent["name"],
+        context: record.context as DomainEvent["context"],
+        novelId: record.novelId,
+        objectId: record.objectId,
+        revisionId: record.revisionId,
+        commitId: record.commitId ?? undefined,
+        payload: record.payload as unknown as DomainEvent["payload"],
+        occurredAt: record.occurredAt,
+      }),
+    );
   }
 }

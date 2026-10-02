@@ -4510,6 +4510,8 @@ git commit -m "feat: add core engine http api"
 
 Prisma repositories serialize domain payloads as JSON at the infrastructure boundary. Revision repositories use a transaction and reject conflicting reuse of an existing revision ID.
 
+`vitest.integration.config.ts` defaults `DATABASE_URL` to `postgresql://novelbrain:novelbrain@localhost:5434/novelbrain?schema=public`, matching the Compose service mapping. No shell export is required for `npm run test:integration -- --run`; an explicitly supplied `DATABASE_URL` remains an override.
+
 **Files:**
 
 - Modify: `package.json`
@@ -4912,7 +4914,7 @@ npx prisma migrate dev --name core_engine_persistence
 npm run test:integration -- --run tests/integration/postgresRoundTrip.test.ts
 ```
 
-Expected: PASS with 2 PostgreSQL round-trip tests.
+Expected: PASS with 4 PostgreSQL round-trip tests.
 
 - [ ] **Step 6: Commit**
 
