@@ -1780,9 +1780,9 @@ describe("ValidationRun", () => {
   });
 
   it("summarizes the most severe outcome", () => {
-    expect(summarizeValidationOutcome([run("pass"), run("pass")])).toBe("pass");
-    expect(summarizeValidationOutcome([run("pass"), run("needs_review")])).toBe("needs_review");
-    expect(summarizeValidationOutcome([run("needs_review"), run("fail")])).toBe("fail");
+    expect(summarizeValidationOutcome(["pass", "pass"])).toBe("pass");
+    expect(summarizeValidationOutcome(["pass", "needs_review"])).toBe("needs_review");
+    expect(summarizeValidationOutcome(["needs_review", "fail"])).toBe("fail");
   });
 });
 ```
