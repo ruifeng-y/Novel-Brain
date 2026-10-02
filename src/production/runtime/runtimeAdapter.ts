@@ -13,6 +13,7 @@ export interface RuntimeRequest {
   readonly taskId: string;
   readonly agentRole: AgentRole;
   readonly modelPolicy: ModelPolicy;
+  readonly basedOnVersionSet: VersionSet;
   readonly context: Readonly<Record<string, unknown>>;
   readonly requestedChange: CandidateChange;
 }
