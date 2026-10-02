@@ -27,15 +27,22 @@ export function rebuildMemoryProjection(
 
   const sceneMemories: Record<string, SceneMemory> = {};
   const sourceRevisionSet: Record<string, string> = {};
-  const committedSceneIds = new Set(
-    events
-      .filter((event) => event.name === "SceneCommitted" && event.context === "manuscript")
-      .map((event) => event.objectId),
+  const sceneCommitEvents = events.filter(
+    (event) => event.name === "SceneCommitted" && event.context === "manuscript",
   );
+  const committedSceneRevisions = new Set(
+    sceneCommitEvents.map((event) => `${event.objectId}:${event.revisionId}`),
+  );
+  const hasSceneCommitEvents = sceneCommitEvents.length > 0;
 
   for (const scene of scenes) {
     sourceRevisionSet[scene.id] = scene.currentRevisionId;
-    if (committedSceneIds.size > 0 && !committedSceneIds.has(scene.id)) continue;
+    if (
+      hasSceneCommitEvents &&
+      !committedSceneRevisions.has(`${scene.id}:${scene.currentRevisionId}`)
+    ) {
+      continue;
+    }
     sceneMemories[scene.id] = {
       revisionId: scene.currentRevisionId,
       summary: scene.text,

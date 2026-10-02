@@ -3645,6 +3645,7 @@ export function rebuildMemoryProjection(
   const committedSceneIds = new Set(
     events
       .filter((event) => event.name === "SceneCommitted" && event.context === "manuscript")
+      .filter((event) => scenes.some((scene) => scene.id === event.objectId && scene.currentRevisionId === event.revisionId))
       .map((event) => event.objectId),
   );
 
@@ -3690,6 +3691,11 @@ export interface GenerationContext {
   readonly stateRecords: readonly StateRecord[];
   readonly memory: MemoryProjection;
   readonly taskIntent: string;
+  readonly maxCharacters: number;
+  readonly selectedCharacterCount: number;
+  readonly overflowed: boolean;
+  readonly omittedFactIds: readonly string[];
+  readonly omittedStateIds: readonly string[];
 }
 
 export function assembleContext(input: {
@@ -3700,6 +3706,7 @@ export function assembleContext(input: {
   requiredFactIds: readonly string[];
   requiredStateIds: readonly string[];
   taskIntent: string;
+  maxCharacters: number;
 }): GenerationContext {
   if (!input.taskIntent.trim()) throw new Error("taskIntent is required");
   if (input.memory.novelId !== input.scene.novelId) {
@@ -3731,15 +3738,22 @@ export function assembleContext(input: {
     stateRecords: Object.freeze([...stateRecords]),
     memory: input.memory,
     taskIntent: input.taskIntent.trim(),
+    maxCharacters: input.maxCharacters,
+    selectedCharacterCount: 0,
+    overflowed: false,
+    omittedFactIds: [],
+    omittedStateIds: [],
   });
 }
 ```
+
+The implementation additionally applies deterministic ranking and a character budget. It scopes facts to the scene novel, scopes state records to the scene position, truncates lower-ranked entries when necessary, and exposes selected size, overflow, and omitted IDs.
 
 - [ ] **Step 4: Run the tests and verify they pass**
 
 Run: `npm test -- --run tests/memory/contextAssembly.test.ts`
 
-Expected: PASS with 3 memory/context tests.
+Expected: PASS with 7 memory/context tests.
 
 - [ ] **Step 5: Commit**
 

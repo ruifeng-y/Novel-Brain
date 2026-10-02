@@ -97,6 +97,7 @@ describe("memory and context", () => {
       requiredFactIds: ["fact-1"],
       requiredStateIds: ["state-1"],
       taskIntent: "Continue the scene.",
+      maxCharacters: 100000,
     });
 
     expect(context.sceneText).toBe(scene.text);
@@ -104,5 +105,132 @@ describe("memory and context", () => {
     expect(context.stateRecords).toEqual([relevantState]);
     expect(context.memory.scenes).toEqual(memory.scenes);
     expect(context.taskIntent).toBe("Continue the scene.");
+  });
+
+  it("ignores stale scene event revisions when rebuilding memory", () => {
+    const scene = sceneWithText("scene-rev-2", "Current text");
+    const staleEvent = createDomainEvent({
+      eventId: "event-stale",
+      name: "SceneCommitted",
+      context: "manuscript",
+      novelId: "novel-1",
+      objectId: scene.id,
+      revisionId: "scene-rev-1",
+      commitId: "commit-stale",
+      payload: {},
+      occurredAt: now,
+    });
+    const projection = rebuildMemoryProjection([staleEvent], [scene]);
+    expect(projection.scenes[scene.id]).toBeUndefined();
+  });
+
+  it("excludes unrelated novel and position records", () => {
+    const scene = sceneWithText("scene-rev-2", "Scoped context");
+    const relevantFact = {
+      id: "fact-relevant",
+      novelId: "novel-1",
+      type: "character_profile",
+      content: { name: "Relevant" },
+      currentRevisionId: "fact-rev-1",
+      lastCommitId: "commit-1",
+      createdAt: now,
+      updatedAt: now,
+    } satisfies CanonicalFact;
+    const unrelatedFact = {
+      ...relevantFact,
+      id: "fact-other-novel",
+      novelId: "novel-2",
+    };
+    const relevantState = {
+      id: "state-relevant",
+      novelId: "novel-1",
+      type: "character_state",
+      subjectId: "fact-relevant",
+      position: { sceneId: scene.id, ordinal: 1 },
+      content: { condition: "ready" },
+      currentRevisionId: "state-rev-1",
+      lastCommitId: "commit-1",
+      createdAt: now,
+      updatedAt: now,
+    } satisfies StateRecord;
+    const unrelatedState = {
+      ...relevantState,
+      id: "state-other-position",
+      position: { sceneId: "scene-other", ordinal: 2 },
+    };
+    const context = assembleContext({
+      scene,
+      canonicalFacts: [relevantFact, unrelatedFact],
+      stateRecords: [relevantState, unrelatedState],
+      memory: rebuildMemoryProjection([], [scene]),
+      requiredFactIds: ["fact-relevant"],
+      requiredStateIds: ["state-relevant"],
+      taskIntent: "Use only relevant context.",
+      maxCharacters: 100000,
+    });
+
+    expect(context.canonicalFacts.map((fact) => fact.id)).toEqual(["fact-relevant"]);
+    expect(context.stateRecords.map((record) => record.id)).toEqual(["state-relevant"]);
+  });
+
+  it("rejects missing required fact and state IDs", () => {
+    const scene = sceneWithText("scene-rev-2", "Missing required context");
+    const memory = rebuildMemoryProjection([], [scene]);
+    expect(() =>
+      assembleContext({
+        scene,
+        canonicalFacts: [],
+        stateRecords: [],
+        memory,
+        requiredFactIds: ["missing-fact"],
+        requiredStateIds: [],
+        taskIntent: "Continue.",
+        maxCharacters: 100000,
+      }),
+    ).toThrow("Required canonical fact not found: missing-fact");
+    expect(() =>
+      assembleContext({
+        scene,
+        canonicalFacts: [],
+        stateRecords: [],
+        memory,
+        requiredFactIds: [],
+        requiredStateIds: ["missing-state"],
+        taskIntent: "Continue.",
+        maxCharacters: 100000,
+      }),
+    ).toThrow("Required state record not found: missing-state");
+  });
+
+  it("truncates deterministic context entries and reports overflow", () => {
+    const scene = sceneWithText("scene-rev-2", "Scene.");
+    const makeFact = (id: string, value: string) =>
+      ({
+        id,
+        novelId: "novel-1",
+        type: "character_profile",
+        content: { value },
+        currentRevisionId: `${id}-rev-1`,
+        lastCommitId: "commit-1",
+        createdAt: now,
+        updatedAt: now,
+      }) satisfies CanonicalFact;
+    const facts = [makeFact("fact-a", "x".repeat(50)), makeFact("fact-b", "y".repeat(50))];
+    const context = assembleContext({
+      scene,
+      canonicalFacts: facts,
+      stateRecords: [],
+      memory: rebuildMemoryProjection([], [scene]),
+      requiredFactIds: ["fact-a", "fact-b"],
+      requiredStateIds: [],
+      taskIntent: "Fit within budget.",
+      maxCharacters: 300,
+    });
+
+    expect(context.overflowed).toBe(true);
+    expect(context.selectedCharacterCount).toBeLessThanOrEqual(300);
+    expect(context.canonicalFacts.map((fact) => fact.id)).toEqual(["fact-a"]);
+    expect(context.omittedFactIds).toEqual(["fact-b"]);
+    expect(context.omittedStateIds).toEqual([]);
   });
 });
