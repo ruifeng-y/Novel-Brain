@@ -131,6 +131,22 @@ describe("runtime abstraction", () => {
     ).rejects.toThrow("text change requires sceneId and text");
   });
 
+  it("rejects an empty model string", async () => {
+    const runtime = new DeterministicRuntime();
+    await expect(
+      runtime.execute({
+        taskId: "task-missing-model",
+        agentRole: "writer",
+        modelPolicy: { provider: "test", model: "", maxOutputTokens: 1000 },
+        basedOnVersionSet: createVersionSet({
+          scene: createVersionReference("Scene", "scene-1", "scene-rev-1"),
+        }),
+        context: {},
+        requestedChange: { type: "text", sceneId: "scene-1", text: "Result" },
+      }),
+    ).rejects.toThrow("model is required");
+  });
+
   it("clones and freezes nested change content", async () => {
     const requestedChange = {
       type: "structured_state",
