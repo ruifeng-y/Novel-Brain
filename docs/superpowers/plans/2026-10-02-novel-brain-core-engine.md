@@ -4224,6 +4224,7 @@ const versionSetSchema = z.custom<VersionSet>(
     typeof value === "object" &&
     value !== null &&
     !Array.isArray(value) &&
+    Object.keys(value).length > 0 &&
     Object.values(value as Record<string, unknown>).every(
       entry => versionReferenceSchema.safeParse(entry).success,
     ),
@@ -4386,21 +4387,36 @@ export function registerNovelBrainRoutes(app: FastifyInstance, dependencies: Api
       .parse(request.body);
     const candidate = await dependencies.candidates.findById(params.candidateId);
     if (!candidate) return reply.code(404).send({ error: "Not Found" });
-    const scene = await dependencies.scenes.findById(
-      candidate.change.type === "text" || candidate.change.type === "local_text"
-        ? candidate.change.sceneId
-        : taskSceneId(candidate),
-    );
-    if (!scene) return reply.code(409).send({ error: "Target scene not found" });
+    const scene = hasSceneChange(candidate.change)
+      ? await dependencies.scenes.findById(taskSceneId(candidate))
+      : undefined;
+    if (hasSceneChange(candidate.change) && !scene) {
+      return reply.code(409).send({ error: "Target scene not found" });
+    }
 
-    const validation = validateCandidate({
+    const preValidation = validateCandidate({
       validationId: body.validationId,
       candidate,
       scene,
       mustPreserve: body.mustPreserve,
       createdAt: new Date(),
     });
-    if (validation.outcome === "fail") return reply.code(422).send(validation.run);
+    if (preValidation.outcome === "fail") return reply.code(422).send(preValidation.run);
+
+    const selectedCandidate = selectCandidate(
+      markCandidateValidated(candidate, new Date()),
+      new Date(),
+    );
+    await dependencies.candidates.save(selectedCandidate);
+    const validation = createValidationRun({
+      id: preValidation.run.id,
+      candidateId: selectedCandidate.id,
+      candidateRevisionId: selectedCandidate.currentRevisionId,
+      validatorId: preValidation.run.validatorId,
+      outcome: preValidation.run.outcome,
+      findings: preValidation.run.findings,
+      createdAt: preValidation.run.createdAt,
+    });
 
     const reviewDecision = createReviewDecision({
       id: body.reviewId,
@@ -4414,12 +4430,6 @@ export function registerNovelBrainRoutes(app: FastifyInstance, dependencies: Api
     });
     await dependencies.validationRuns.save(validation.run);
     await dependencies.reviewDecisions.save(reviewDecision);
-    const selectedCandidate = selectCandidate(
-      markCandidateValidated(candidate, new Date()),
-      new Date(),
-    );
-    await dependencies.candidates.save(selectedCandidate);
-
     const commit = await commitCandidate({
       repositories: {
         scenes: dependencies.scenes,
@@ -4432,7 +4442,7 @@ export function registerNovelBrainRoutes(app: FastifyInstance, dependencies: Api
       input: {
         commitId: body.commitId,
         candidateId: selectedCandidate.id,
-        validationRuns: [validation.run],
+        validationRuns: [validation],
         reviewDecision,
         now: new Date(),
       },
@@ -4453,6 +4463,11 @@ function taskSceneId(candidate: Candidate): string {
   if (!taskVersion) throw new Error("Candidate has no scene target");
   return taskVersion.objectId;
 }
+
+function hasSceneChange(change: Candidate["change"]): boolean {
+  const changes = change.type === "composite" ? change.changes : [change];
+  return changes.some(atomicChange => atomicChange.type === "text" || atomicChange.type === "local_text");
+}
 ```
 
 ```ts
@@ -4470,7 +4485,7 @@ export function createNovelBrainServer(dependencies: ApiDependencies) {
 
 Run: `npm test -- --run tests/http/api.test.ts`
 
-Expected: PASS with 2 API tests.
+Expected: PASS with 5 API tests.
 
 - [ ] **Step 6: Commit**
 

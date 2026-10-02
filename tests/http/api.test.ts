@@ -16,7 +16,7 @@ import { registerNovelBrainRoutes } from "../../src/http/routes";
 
 function server() {
   const app = Fastify();
-  registerNovelBrainRoutes(app, {
+  const dependencies = {
     novels: new InMemoryRepository<Novel>(),
     scenes: new InMemoryRevisionedRepository<Scene>(),
     generationTasks: new InMemoryRepository<GenerationTask>(),
@@ -28,13 +28,14 @@ function server() {
     narrativeCommits: new InMemoryRepository<NarrativeCommit>(),
     eventStore: new InMemoryEventStore(),
     runtime: new DeterministicRuntime(),
-  });
-  return app;
+  };
+  registerNovelBrainRoutes(app, dependencies);
+  return { app, dependencies };
 }
 
 describe("core engine API", () => {
   it("supports the co-creation loop over HTTP", async () => {
-    const app = server();
+    const { app } = server();
     const novelResponse = await app.inject({
       method: "POST",
       url: "/novels",
@@ -105,11 +106,246 @@ describe("core engine API", () => {
   });
 
   it("rejects an invalid novel payload", async () => {
-    const app = server();
+    const { app } = server();
     const response = await app.inject({
       method: "POST",
       url: "/novels",
       payload: { id: "novel-1", authorId: "", title: "Title" },
+    });
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toMatchObject({ error: "Bad Request" });
+    await app.close();
+  });
+
+  it("returns validation failure without selecting the candidate", async () => {
+    const { app, dependencies } = server();
+    await app.inject({
+      method: "POST",
+      url: "/novels",
+      payload: { id: "novel-validation", authorId: "author-1", title: "Validation Novel" },
+    });
+    const sceneResponse = await app.inject({
+      method: "POST",
+      url: "/novels/novel-validation/scenes",
+      payload: { id: "scene-validation", chapterId: "chapter-1", title: "Validation Scene" },
+    });
+    const scene = sceneResponse.json();
+    await app.inject({
+      method: "POST",
+      url: "/novels/novel-validation/generation-tasks",
+      payload: {
+        id: "task-validation",
+        operation: "rewrite",
+        targetSceneId: scene.id,
+        intent: "Rewrite the scene.",
+        basedOnVersionSet: {
+          scene: {
+            aggregateType: "Scene",
+            objectId: scene.id,
+            revisionId: scene.currentRevisionId,
+          },
+        },
+      },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/generation-tasks/task-validation/candidates",
+      payload: {
+        id: "candidate-validation",
+        agentRole: "writer",
+        modelPolicy: { provider: "test", model: "deterministic", maxOutputTokens: 1000 },
+        change: { type: "text", sceneId: scene.id, text: "Different text" },
+      },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/candidates/candidate-validation/commit",
+      payload: {
+        commitId: "commit-validation",
+        validationId: "validation-run",
+        reviewId: "review-run",
+        actorId: "author-1",
+        mustPreserve: ["Northern Sect"],
+      },
+    });
+
+    expect(response.statusCode).toBe(422);
+    expect((await dependencies.candidates.findById("candidate-validation"))?.status).toBe("generated");
+    await app.close();
+  });
+
+  it("commits structured-only and canonical-only candidates without a scene change", async () => {
+    const structured = server();
+    await structured.app.inject({
+      method: "POST",
+      url: "/novels",
+      payload: { id: "novel-structured", authorId: "author-1", title: "Structured Novel" },
+    });
+    const structuredScene = (
+      await structured.app.inject({
+        method: "POST",
+        url: "/novels/novel-structured/scenes",
+        payload: { id: "scene-structured", chapterId: "chapter-1", title: "Structured Scene" },
+      })
+    ).json();
+    await structured.dependencies.stateRecords.save({
+      id: "state-structured",
+      novelId: "novel-structured",
+      type: "character_state",
+      subjectId: "fact-structured",
+      position: { sceneId: structuredScene.id, ordinal: 1 },
+      content: { condition: "healthy" },
+      currentRevisionId: "state-rev-1",
+      lastCommitId: "initial",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await structured.app.inject({
+      method: "POST",
+      url: "/novels/novel-structured/generation-tasks",
+      payload: {
+        id: "task-structured",
+        operation: "rewrite",
+        targetSceneId: structuredScene.id,
+        intent: "Change state only.",
+        basedOnVersionSet: {
+          scene: {
+            aggregateType: "Scene",
+            objectId: structuredScene.id,
+            revisionId: structuredScene.currentRevisionId,
+          },
+          stateRecord: {
+            aggregateType: "StateRecord",
+            objectId: "state-structured",
+            revisionId: "state-rev-1",
+          },
+        },
+      },
+    });
+    await structured.app.inject({
+      method: "POST",
+      url: "/generation-tasks/task-structured/candidates",
+      payload: {
+        id: "candidate-structured",
+        agentRole: "writer",
+        modelPolicy: { provider: "test", model: "deterministic", maxOutputTokens: 1000 },
+        change: {
+          type: "structured_state",
+          stateRecordId: "state-structured",
+          content: { condition: "injured" },
+        },
+      },
+    });
+    const structuredCommit = await structured.app.inject({
+      method: "POST",
+      url: "/candidates/candidate-structured/commit",
+      payload: {
+        commitId: "commit-structured",
+        validationId: "validation-structured",
+        reviewId: "review-structured",
+        actorId: "author-1",
+        mustPreserve: [],
+      },
+    });
+    expect(structuredCommit.statusCode).toBe(201);
+    await structured.app.close();
+
+    const canonical = server();
+    await canonical.app.inject({
+      method: "POST",
+      url: "/novels",
+      payload: { id: "novel-canonical", authorId: "author-1", title: "Canonical Novel" },
+    });
+    const canonicalScene = (
+      await canonical.app.inject({
+        method: "POST",
+        url: "/novels/novel-canonical/scenes",
+        payload: { id: "scene-canonical", chapterId: "chapter-1", title: "Canonical Scene" },
+      })
+    ).json();
+    await canonical.dependencies.canonicalFacts.save({
+      id: "fact-canonical",
+      novelId: "novel-canonical",
+      type: "world_rule",
+      content: { rule: "Old rule" },
+      currentRevisionId: "fact-rev-1",
+      lastCommitId: "initial",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await canonical.app.inject({
+      method: "POST",
+      url: "/novels/novel-canonical/generation-tasks",
+      payload: {
+        id: "task-canonical",
+        operation: "rewrite",
+        targetSceneId: canonicalScene.id,
+        intent: "Change canon only.",
+        basedOnVersionSet: {
+          scene: {
+            aggregateType: "Scene",
+            objectId: canonicalScene.id,
+            revisionId: canonicalScene.currentRevisionId,
+          },
+          canonicalFact: {
+            aggregateType: "CanonicalFact",
+            objectId: "fact-canonical",
+            revisionId: "fact-rev-1",
+          },
+        },
+      },
+    });
+    await canonical.app.inject({
+      method: "POST",
+      url: "/generation-tasks/task-canonical/candidates",
+      payload: {
+        id: "candidate-canonical",
+        agentRole: "writer",
+        modelPolicy: { provider: "test", model: "deterministic", maxOutputTokens: 1000 },
+        change: {
+          type: "canonical_fact",
+          canonicalFactId: "fact-canonical",
+          content: { rule: "New rule" },
+        },
+      },
+    });
+    const canonicalCommit = await canonical.app.inject({
+      method: "POST",
+      url: "/candidates/candidate-canonical/commit",
+      payload: {
+        commitId: "commit-canonical",
+        validationId: "validation-canonical",
+        reviewId: "review-canonical",
+        actorId: "author-1",
+        mustPreserve: [],
+      },
+    });
+    expect(canonicalCommit.statusCode).toBe(201);
+    await canonical.app.close();
+  });
+
+  it("rejects empty version sets through the API schema", async () => {
+    const { app } = server();
+    await app.inject({
+      method: "POST",
+      url: "/novels",
+      payload: { id: "novel-empty-version", authorId: "author-1", title: "Empty Version" },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/novels/novel-empty-version/scenes",
+      payload: { id: "scene-empty-version", chapterId: "chapter-1", title: "Scene" },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/novels/novel-empty-version/generation-tasks",
+      payload: {
+        id: "task-empty-version",
+        operation: "rewrite",
+        targetSceneId: "scene-empty-version",
+        intent: "Rewrite.",
+        basedOnVersionSet: {},
+      },
     });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: "Bad Request" });

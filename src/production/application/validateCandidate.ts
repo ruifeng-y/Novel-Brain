@@ -13,7 +13,7 @@ import {
 export interface ValidationRequest {
   readonly validationId: string;
   readonly candidate: Candidate;
-  readonly scene: Scene;
+  readonly scene?: Scene;
   readonly mustPreserve: readonly string[];
   readonly createdAt: Date;
 }
@@ -64,11 +64,15 @@ function targetSpanErrorCode(error: unknown): string {
 
 function validateAtomicChange(
   change: CandidateAtomicChange,
-  scene: Scene,
+  scene: Scene | undefined,
   findings: ValidationFinding[],
 ): void {
   if (change.type === "text") {
-    if (change.sceneId !== scene.id) {
+    if (!scene) {
+      addFinding(findings, "SCENE_REQUIRED", "Text change requires a scene.", {
+        sceneId: change.sceneId,
+      });
+    } else if (change.sceneId !== scene.id) {
       addFinding(
         findings,
         "SCENE_MISMATCH",
@@ -85,6 +89,12 @@ function validateAtomicChange(
   }
 
   if (change.type === "local_text") {
+    if (!scene) {
+      addFinding(findings, "SCENE_REQUIRED", "Local text change requires a scene.", {
+        sceneId: change.sceneId,
+      });
+      return;
+    }
     if (change.sceneId !== scene.id) {
       addFinding(
         findings,
@@ -128,7 +138,7 @@ function validateAtomicChange(
 }
 
 function resultingSceneText(
-  scene: Scene,
+  scene: Scene | undefined,
   changes: readonly CandidateAtomicChange[],
   findings: ValidationFinding[],
 ): string {
@@ -136,28 +146,29 @@ function resultingSceneText(
     (change): change is Extract<CandidateAtomicChange, { type: "text" | "local_text" }> =>
       change.type === "text" || change.type === "local_text",
   );
-  if (sceneChanges.length === 0) return scene.text;
+  if (sceneChanges.length === 0) return scene?.text ?? "";
   if (sceneChanges.length > 1) {
     addFinding(
       findings,
       "DUPLICATE_CANDIDATE_TARGET",
       "Composite candidate contains multiple changes for one scene.",
-      { sceneId: scene.id },
+      { sceneId: scene?.id ?? "unknown" },
     );
-    return scene.text;
+    return scene?.text ?? "";
   }
 
   const sceneChange = sceneChanges[0];
-  if (!sceneChange) return scene.text;
+  if (!sceneChange) return scene?.text ?? "";
   if (sceneChange.type === "text") return sceneChange.text;
   try {
+    if (!scene) return "";
     return replaceTargetSpan({
       scene,
       target: sceneChange.targetSpan,
       replacement: sceneChange.replacement,
     });
   } catch {
-    return scene.text;
+    return scene?.text ?? "";
   }
 }
 
