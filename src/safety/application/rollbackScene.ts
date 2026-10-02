@@ -1,8 +1,8 @@
 import type { Scene } from "../../manuscript/domain/scene";
 import { commitSceneText } from "../../manuscript/domain/scene";
 import type { RevisionedRepository } from "../../shared/application/repository";
-import { createDomainEvent } from "../domain/domainEvent";
 import type { EventStore } from "../infrastructure/eventStore";
+import { createSceneCommittedEvent } from "../../manuscript/domain/manuscriptEvents";
 
 export interface RollbackSceneInput {
   readonly rollbackId: string;
@@ -41,19 +41,22 @@ export async function rollbackScene(input: {
     updatedAt: input.input.now,
   });
   await input.scenes.save(restored);
-  await input.eventStore.append(
-    createDomainEvent({
-      eventId: `event:${input.input.rollbackId}:${restored.id}`,
-      name: "SceneCommitted",
-      context: "manuscript",
-      novelId: restored.novelId,
-      objectId: restored.id,
-      revisionId: restoredRevisionId,
-      commitId: input.input.rollbackId,
-      payload: { rollback: true, reason: input.input.reason.trim() },
-      occurredAt: input.input.now,
-    }),
-  );
+  try {
+    await input.eventStore.appendMany([
+      createSceneCommittedEvent({
+        eventId: `event:${input.input.rollbackId}:${restored.id}`,
+        novelId: restored.novelId,
+        objectId: restored.id,
+        revisionId: restoredRevisionId,
+        commitId: input.input.rollbackId,
+        payload: { rollback: true, reason: input.input.reason.trim() },
+        occurredAt: input.input.now,
+      }),
+    ]);
+  } catch (error) {
+    await input.scenes.save(current);
+    throw error;
+  }
 
   return Object.freeze({ scene: restored, restoredRevisionId });
 }

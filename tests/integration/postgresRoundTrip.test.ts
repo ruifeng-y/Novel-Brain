@@ -180,4 +180,22 @@ describe("PostgreSQL persistence", () => {
     expect(orderedEvents.map(item => item.eventId)).toEqual(["event-1", "event-2"]);
     await expect(store.append(event)).rejects.toThrow("Unique constraint failed");
   });
+
+  it("rolls back an atomic event batch with duplicate IDs", async () => {
+    const store = new PrismaEventStore(prisma);
+    const first = createDomainEvent({
+      eventId: "batch-event-1",
+      name: "SceneCommitted",
+      context: "manuscript",
+      novelId: "novel-batch",
+      objectId: "scene-batch",
+      revisionId: "scene-rev-1",
+      payload: {},
+      occurredAt: new Date("2026-10-02T00:00:00.000Z"),
+    });
+    await expect(
+      store.appendMany([first, { ...first, eventId: "batch-event-1" }]),
+    ).rejects.toThrow();
+    expect(await store.listByNovel("novel-batch")).toEqual([]);
+  });
 });

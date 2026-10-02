@@ -46,6 +46,7 @@ describe("core engine API", () => {
     const sceneResponse = await app.inject({
       method: "POST",
       url: "/novels/novel-1/scenes",
+      headers: { "x-author-id": "author-1" },
       payload: { id: "scene-1", chapterId: "chapter-1", title: "The Northern Gate" },
     });
     expect(sceneResponse.statusCode).toBe(201);
@@ -54,6 +55,7 @@ describe("core engine API", () => {
     const taskResponse = await app.inject({
       method: "POST",
       url: "/novels/novel-1/generation-tasks",
+      headers: { "x-author-id": "author-1" },
       payload: {
         id: "task-1",
         operation: "rewrite",
@@ -100,6 +102,7 @@ describe("core engine API", () => {
     expect(eventsResponse.statusCode).toBe(200);
     expect(eventsResponse.json()).toEqual([
       expect.objectContaining({ name: "SceneCommitted", objectId: "scene-1" }),
+      expect.objectContaining({ name: "NarrativeCommitRecorded", objectId: "commit-1" }),
     ]);
 
     await app.close();
@@ -127,12 +130,14 @@ describe("core engine API", () => {
     const sceneResponse = await app.inject({
       method: "POST",
       url: "/novels/novel-validation/scenes",
+      headers: { "x-author-id": "author-1" },
       payload: { id: "scene-validation", chapterId: "chapter-1", title: "Validation Scene" },
     });
     const scene = sceneResponse.json();
     await app.inject({
       method: "POST",
       url: "/novels/novel-validation/generation-tasks",
+      headers: { "x-author-id": "author-1" },
       payload: {
         id: "task-validation",
         operation: "rewrite",
@@ -185,6 +190,7 @@ describe("core engine API", () => {
       await structured.app.inject({
         method: "POST",
         url: "/novels/novel-structured/scenes",
+        headers: { "x-author-id": "author-1" },
         payload: { id: "scene-structured", chapterId: "chapter-1", title: "Structured Scene" },
       })
     ).json();
@@ -203,6 +209,7 @@ describe("core engine API", () => {
     await structured.app.inject({
       method: "POST",
       url: "/novels/novel-structured/generation-tasks",
+      headers: { "x-author-id": "author-1" },
       payload: {
         id: "task-structured",
         operation: "rewrite",
@@ -260,6 +267,7 @@ describe("core engine API", () => {
       await canonical.app.inject({
         method: "POST",
         url: "/novels/novel-canonical/scenes",
+        headers: { "x-author-id": "author-1" },
         payload: { id: "scene-canonical", chapterId: "chapter-1", title: "Canonical Scene" },
       })
     ).json();
@@ -276,6 +284,7 @@ describe("core engine API", () => {
     await canonical.app.inject({
       method: "POST",
       url: "/novels/novel-canonical/generation-tasks",
+      headers: { "x-author-id": "author-1" },
       payload: {
         id: "task-canonical",
         operation: "rewrite",
@@ -334,11 +343,13 @@ describe("core engine API", () => {
     await app.inject({
       method: "POST",
       url: "/novels/novel-empty-version/scenes",
+      headers: { "x-author-id": "author-1" },
       payload: { id: "scene-empty-version", chapterId: "chapter-1", title: "Scene" },
     });
     const response = await app.inject({
       method: "POST",
       url: "/novels/novel-empty-version/generation-tasks",
+      headers: { "x-author-id": "author-1" },
       payload: {
         id: "task-empty-version",
         operation: "rewrite",
@@ -352,6 +363,50 @@ describe("core engine API", () => {
     await app.close();
   });
 
+  it("verifies novel existence and author ownership before creating child objects", async () => {
+    const { app } = server();
+    const novelResponse = await app.inject({
+      method: "POST",
+      url: "/novels",
+      payload: { id: "novel-owned", authorId: "author-1", title: "Owned Novel" },
+    });
+    expect(novelResponse.statusCode).toBe(201);
+    const missing = await app.inject({
+      method: "POST",
+      url: "/novels/novel-missing/scenes",
+      headers: { "x-author-id": "author-1" },
+      payload: { id: "scene-missing", chapterId: "chapter-1", title: "Missing" },
+    });
+    expect(missing.statusCode).toBe(404);
+    const forbidden = await app.inject({
+      method: "POST",
+      url: "/novels/novel-owned/scenes",
+      headers: { "x-author-id": "author-2" },
+      payload: { id: "scene-forbidden", chapterId: "chapter-1", title: "Forbidden" },
+    });
+    expect(forbidden.statusCode).toBe(403);
+    const targetMissing = await app.inject({
+      method: "POST",
+      url: "/novels/novel-owned/generation-tasks",
+      headers: { "x-author-id": "author-1" },
+      payload: {
+        id: "task-target-missing",
+        operation: "rewrite",
+        targetSceneId: "scene-missing",
+        intent: "Rewrite.",
+        basedOnVersionSet: {
+          scene: {
+            aggregateType: "Scene",
+            objectId: "scene-missing",
+            revisionId: "scene-rev-1",
+          },
+        },
+      },
+    });
+    expect(targetMissing.statusCode).toBe(404);
+    await app.close();
+  });
+
   it("commits a composite candidate over scene and state changes", async () => {
     const { app, dependencies } = server();
     await app.inject({
@@ -362,6 +417,7 @@ describe("core engine API", () => {
     const sceneResponse = await app.inject({
       method: "POST",
       url: "/novels/novel-composite-api/scenes",
+      headers: { "x-author-id": "author-1" },
       payload: { id: "scene-composite-api", chapterId: "chapter-1", title: "Composite Scene" },
     });
     const scene = sceneResponse.json();
@@ -380,6 +436,7 @@ describe("core engine API", () => {
     await app.inject({
       method: "POST",
       url: "/novels/novel-composite-api/generation-tasks",
+      headers: { "x-author-id": "author-1" },
       payload: {
         id: "task-composite-api",
         operation: "rewrite",
@@ -437,7 +494,11 @@ describe("core engine API", () => {
       condition: "injured",
     });
     const events = await dependencies.eventStore.listByNovel("novel-composite-api");
-    expect(events.map(event => event.name)).toEqual(["SceneCommitted", "CharacterStateChanged"]);
+    expect(events.map(event => event.name)).toEqual([
+      "SceneCommitted",
+      "CharacterStateChanged",
+      "NarrativeCommitRecorded",
+    ]);
     await app.close();
   });
 
@@ -451,12 +512,14 @@ describe("core engine API", () => {
     const sceneResponse = await app.inject({
       method: "POST",
       url: "/novels/novel-stale-api/scenes",
+      headers: { "x-author-id": "author-1" },
       payload: { id: "scene-stale-api", chapterId: "chapter-1", title: "Stale Scene" },
     });
     const scene = sceneResponse.json() as Scene;
     await app.inject({
       method: "POST",
       url: "/novels/novel-stale-api/generation-tasks",
+      headers: { "x-author-id": "author-1" },
       payload: {
         id: "task-stale-api",
         operation: "rewrite",

@@ -89,6 +89,10 @@ class FailingEventStore implements EventStore {
     throw new Error("event write failed");
   }
 
+  async appendMany(_events: readonly Parameters<EventStore["append"]>[0][]): Promise<void> {
+    throw new Error("event write failed");
+  }
+
   async listByNovel(_novelId: string): Promise<readonly never[]> {
     return [];
   }
@@ -193,7 +197,7 @@ describe("commitCandidate", () => {
     const events = await context.events.listByNovel("novel-1");
     expect(commit.status).toBe("committed");
     expect(scene?.text).toBe("New text");
-    expect(events.map((event) => event.name)).toEqual(["SceneCommitted"]);
+    expect(events.map((event) => event.name)).toEqual(["SceneCommitted", "NarrativeCommitRecorded"]);
   });
 
   it("rejects a candidate based on an outdated scene revision", async () => {
@@ -324,6 +328,7 @@ describe("commitCandidate", () => {
     expect((await canonicalFacts.findById(fact.id))?.content).toEqual({ rule: "New rule" });
     expect((await events.listByNovel("novel-1")).map(event => event.name)).toEqual([
       "CanonicalFactChanged",
+      "NarrativeCommitRecorded",
     ]);
   });
 
@@ -378,6 +383,7 @@ describe("commitCandidate", () => {
     expect((await stateRecords.findById(record.id))?.content).toEqual({ condition: "injured" });
     expect((await events.listByNovel("novel-1")).map(event => event.name)).toEqual([
       "CharacterStateChanged",
+      "NarrativeCommitRecorded",
     ]);
   });
 
@@ -394,7 +400,15 @@ describe("commitCandidate", () => {
     const scene = commitSceneText({
       scene: initial,
       text: "First paragraph. Second paragraph. Third paragraph.",
-      spanAnchors: { "span-2": "Second paragraph." },
+      spanAnchors: {
+        "span-2": {
+          anchorId: "span-2",
+          start: 17,
+          end: 34,
+          text: "Second paragraph.",
+          sourceContentHash: hashContent("Second paragraph."),
+        },
+      },
       revisionId: "scene-rev-2",
       commitId: "initial-commit",
       updatedAt: now,
@@ -442,7 +456,11 @@ describe("commitCandidate", () => {
 
     const committed = await scenes.findById(scene.id);
     expect(committed?.text).toBe("First paragraph. Changed paragraph. Third paragraph.");
-    expect(committed?.spanAnchors).toEqual({ "span-2": "Changed paragraph." });
+    expect(committed?.spanAnchors["span-2"]).toMatchObject({
+      anchorId: "span-2",
+      text: "Changed paragraph.",
+      sourceContentHash: hashContent("Changed paragraph."),
+    });
   });
 
   it("commits composite text, state, and canonical changes in one transition", async () => {
@@ -546,6 +564,7 @@ describe("commitCandidate", () => {
       "SceneCommitted",
       "CanonicalFactChanged",
       "CharacterStateChanged",
+      "NarrativeCommitRecorded",
     ]);
   });
 

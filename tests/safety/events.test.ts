@@ -2,15 +2,16 @@ import { describe, expect, it } from "vitest";
 import { createDomainEvent } from "../../src/safety/domain/domainEvent";
 import type { DomainEvent } from "../../src/safety/domain/domainEvent";
 import { InMemoryEventStore } from "../../src/safety/infrastructure/eventStore";
+import { createSceneCommittedEvent } from "../../src/manuscript/domain/manuscriptEvents";
+import { createCharacterStateChangedEvent } from "../../src/narrative/state/domain/narrativeStateEvents";
+import { createMemoryProjectionRebuiltEvent } from "../../src/memory/projections/memoryEvents";
 
 const now = new Date("2026-10-02T00:00:00.000Z");
 
 describe("domain events", () => {
   it("binds event semantics to the producing context", () => {
-    const event = createDomainEvent({
+    const event = createSceneCommittedEvent({
       eventId: "event-1",
-      name: "SceneCommitted",
-      context: "manuscript",
       novelId: "novel-1",
       objectId: "scene-1",
       revisionId: "scene-rev-2",
@@ -39,31 +40,25 @@ describe("domain events", () => {
     ).toThrow("eventId is required");
   });
 
-  it("rejects event names from the wrong producing context", () => {
-    expect(() =>
-      createDomainEvent({
-        eventId: "event-invalid",
-        name: "SceneCommitted",
-        context: "narrative_state",
-        novelId: "novel-1",
-        objectId: "scene-1",
-        revisionId: "scene-rev-2",
-        payload: {},
-        occurredAt: now,
-      }),
-    ).toThrow("Event SceneCommitted cannot be produced by context narrative_state");
-    expect(() =>
-      createDomainEvent({
-        eventId: "event-invalid-2",
-        name: "MemoryProjectionRebuilt",
-        context: "platform",
-        novelId: "novel-1",
-        objectId: "memory-1",
-        revisionId: "memory-rev-1",
-        payload: {},
-        occurredAt: now,
-      }),
-    ).toThrow("Event MemoryProjectionRebuilt cannot be produced by context platform");
+  it("binds event semantics through producing-context factories", () => {
+    const sceneEvent = createSceneCommittedEvent({
+      eventId: "event-scene",
+      novelId: "novel-1",
+      objectId: "scene-1",
+      revisionId: "scene-rev-2",
+      payload: {},
+      occurredAt: now,
+    });
+    const memoryEvent = createMemoryProjectionRebuiltEvent({
+      eventId: "event-memory",
+      novelId: "novel-1",
+      objectId: "memory-1",
+      revisionId: "memory-rev-1",
+      payload: {},
+      occurredAt: now,
+    });
+    expect(sceneEvent).toMatchObject({ name: "SceneCommitted", context: "manuscript" });
+    expect(memoryEvent).toMatchObject({ name: "MemoryProjectionRebuilt", context: "memory" });
   });
 
   it("deep-freezes nested event payloads", () => {
@@ -117,10 +112,8 @@ describe("domain events", () => {
       payload: {},
       occurredAt: now,
     });
-    const second = createDomainEvent({
+    const second = createCharacterStateChangedEvent({
       eventId: "event-2",
-      name: "CharacterStateChanged",
-      context: "narrative_state",
       novelId: "novel-1",
       objectId: "state-1",
       revisionId: "state-rev-2",
@@ -149,6 +142,22 @@ describe("domain events", () => {
     });
     await store.append(event);
     await expect(store.append({ ...event })).rejects.toThrow("Duplicate event id: event-duplicate");
+  });
+
+  it("rejects an atomic batch without partial audit evidence", async () => {
+    const store = new InMemoryEventStore();
+    const first = createSceneCommittedEvent({
+      eventId: "batch-1",
+      novelId: "novel-1",
+      objectId: "scene-1",
+      revisionId: "scene-rev-1",
+      payload: {},
+      occurredAt: now,
+    });
+    await expect(
+      store.appendMany([first, { ...first, eventId: "batch-1" }]),
+    ).rejects.toThrow("Duplicate event id: batch-1");
+    expect(await store.listByNovel("novel-1")).toEqual([]);
   });
 
   it("stores immutable snapshots of mutable raw events", async () => {

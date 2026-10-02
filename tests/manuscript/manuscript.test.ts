@@ -83,7 +83,15 @@ describe("manuscript aggregates", () => {
     const original = commitSceneText({
       scene,
       text: "First paragraph. Second paragraph. Third paragraph.",
-      spanAnchors: { "span-2": "Second paragraph." },
+      spanAnchors: {
+        "span-2": {
+          anchorId: "span-2",
+          start: 17,
+          end: 34,
+          text: "Second paragraph.",
+          sourceContentHash: hashContent("Second paragraph."),
+        },
+      },
       revisionId: "scene-rev-2",
       commitId: "commit-2",
       updatedAt: now,
@@ -113,7 +121,15 @@ describe("manuscript aggregates", () => {
     const committed = commitSceneText({
       scene,
       text: "First paragraph. Second paragraph. Third paragraph.",
-      spanAnchors: { "span-2": "Second paragraph." },
+      spanAnchors: {
+        "span-2": {
+          anchorId: "span-2",
+          start: 17,
+          end: 34,
+          text: "Second paragraph.",
+          sourceContentHash: hashContent("Second paragraph."),
+        },
+      },
       revisionId: "scene-rev-2",
       commitId: "commit-2",
       updatedAt: now,
@@ -128,7 +144,7 @@ describe("manuscript aggregates", () => {
     expect(resolved).toEqual({ start: 17, end: 34, text: "Second paragraph." });
   });
 
-  it("rejects ambiguous duplicate target text", () => {
+  it("supports duplicate text through distinct stable anchors", () => {
     const scene = createScene({
       id: "scene-duplicate",
       novelId: "novel-1",
@@ -142,12 +158,55 @@ describe("manuscript aggregates", () => {
       commitSceneText({
         scene,
         text: "Repeated. Repeated.",
-        spanAnchors: { "span-duplicate": "Repeated." },
+        spanAnchors: {
+          "span-first": {
+            anchorId: "span-first",
+            start: 0,
+            end: 9,
+            text: "Repeated.",
+            sourceContentHash: hashContent("Repeated."),
+          },
+          "span-second": {
+            anchorId: "span-second",
+            start: 10,
+            end: 19,
+            text: "Repeated.",
+            sourceContentHash: hashContent("Repeated."),
+          },
+        },
         revisionId: "scene-rev-2",
         commitId: "commit-2",
         updatedAt: now,
       }),
-    ).toThrow("Target span anchor text is ambiguous: span-duplicate");
+    ).not.toThrow();
+    const committed = commitSceneText({
+      scene,
+      text: "Repeated. Repeated.",
+      spanAnchors: {
+        "span-first": {
+          anchorId: "span-first",
+          start: 0,
+          end: 9,
+          text: "Repeated.",
+          sourceContentHash: hashContent("Repeated."),
+        },
+        "span-second": {
+          anchorId: "span-second",
+          start: 10,
+          end: 19,
+          text: "Repeated.",
+          sourceContentHash: hashContent("Repeated."),
+        },
+      },
+      revisionId: "scene-rev-2",
+      commitId: "commit-2",
+      updatedAt: now,
+    });
+    expect(resolveTargetSpan(committed, {
+      anchorId: "span-second",
+      text: "Repeated.",
+      sourceContentHash: hashContent("Repeated."),
+    })).toEqual({ start: 10, end: 19, text: "Repeated." });
   });
 
   it("clears old anchors when full text is committed without new anchors", () => {
@@ -163,7 +222,15 @@ describe("manuscript aggregates", () => {
     const anchored = commitSceneText({
       scene,
       text: "Original target.",
-      spanAnchors: { "span-clear": "Original target." },
+      spanAnchors: {
+        "span-clear": {
+          anchorId: "span-clear",
+          start: 0,
+          end: 16,
+          text: "Original target.",
+          sourceContentHash: hashContent("Original target."),
+        },
+      },
       revisionId: "scene-rev-2",
       commitId: "commit-2",
       updatedAt: now,

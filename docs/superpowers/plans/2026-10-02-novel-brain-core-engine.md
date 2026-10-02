@@ -916,6 +916,8 @@ git commit -m "feat: add position-aware state records"
 
 ### Task 5: Manuscript Aggregates and Target Span
 
+Target spans use `SceneSpanAnchor` metadata containing a stable anchor ID, scene-revision ID, start/end offsets, text, and source content hash. Resolution never searches by text, so duplicate text is safe when separate anchors carry distinct ranges. Local replacement rebases affected anchor offsets and binds the new anchors to the resulting scene revision.
+
 **Files:**
 
 - Create: `src/manuscript/domain/arc.ts`
@@ -2361,6 +2363,8 @@ git commit -m "feat: add narrative commit process aggregate"
 
 ### Task 11: Context-Owned Domain Events
 
+Producing contexts provide named event factories for manuscript, narrative-state, AI-production, and memory contracts. State Safety retains only the generic JSON event envelope and persistence/recovery infrastructure. Event stores support atomic batch append, which commit and rollback use for multi-event evidence.
+
 **Files:**
 
 - Create: `src/safety/domain/domainEvent.ts`
@@ -2614,7 +2618,7 @@ export class InMemoryEventStore implements EventStore {
 
 Run: `npm test -- --run tests/safety/events.test.ts`
 
-Expected: PASS with 8 event tests.
+Expected: PASS with 9 event tests.
 
 - [ ] **Step 5: Commit**
 
@@ -3479,6 +3483,8 @@ git commit -m "feat: add narrative commit application service"
 
 ### Task 15: Memory Projection and Context Assembly
 
+`SceneMemory` stores bounded deterministic summary text plus source length and source hash. `MemoryProjection.sourceRevisionSet` binds scene, canonical-fact, and state-record revisions using aggregate-qualified keys so staleness checks cover every dependency used to derive memory.
+
 **Files:**
 
 - Create: `src/memory/projections/memoryProjection.ts`
@@ -3754,7 +3760,7 @@ The implementation additionally applies deterministic ranking and a character bu
 
 Run: `npm test -- --run tests/memory/contextAssembly.test.ts`
 
-Expected: PASS with 7 memory/context tests.
+Expected: PASS with 9 memory/context tests.
 
 - [ ] **Step 5: Commit**
 
@@ -4008,6 +4014,8 @@ git commit -m "feat: add basic candidate validator"
 ---
 
 ### Task 17: Core Engine HTTP API
+
+Scene and generation-task creation verifies that the target novel exists and that `x-author-id` matches the novel author before creating child objects; target scenes must also belong to that novel.
 
 **Files:**
 
@@ -4495,7 +4503,7 @@ export function createNovelBrainServer(dependencies: ApiDependencies) {
 
 Run: `npm test -- --run tests/http/api.test.ts`
 
-Expected: PASS with 7 API tests.
+Expected: PASS with 8 API tests.
 
 - [ ] **Step 6: Commit**
 
@@ -4914,7 +4922,7 @@ npx prisma migrate dev --name core_engine_persistence
 npm run test:integration -- --run tests/integration/postgresRoundTrip.test.ts
 ```
 
-Expected: PASS with 4 PostgreSQL round-trip tests.
+Expected: PASS with 5 PostgreSQL round-trip tests.
 
 - [ ] **Step 6: Commit**
 
@@ -4926,6 +4934,8 @@ git commit -m "feat: add postgres persistence mapping"
 ---
 
 ### Task 19: Scene Revision Rollback Service
+
+Rollback restores prior anchor metadata through scene-revision-bound normalization and uses atomic batch event persistence. If event persistence fails after the restored scene is saved, rollback compensates by restoring the pre-rollback current scene and surfaces the original failure.
 
 **Files:**
 
@@ -5106,7 +5116,7 @@ export async function rollbackScene(input: {
 
 Run: `npm test -- --run tests/safety/rollbackScene.test.ts`
 
-Expected: PASS with 2 rollback tests.
+Expected: PASS with 3 rollback tests.
 
 - [ ] **Step 5: Commit**
 

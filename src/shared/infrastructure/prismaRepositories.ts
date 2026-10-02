@@ -191,8 +191,12 @@ export class PrismaEventStore implements EventStore {
   constructor(private readonly prisma: PrismaClient) {}
 
   async append(event: DomainEvent): Promise<void> {
-    await this.prisma.domainEvent.create({
-      data: {
+    await this.appendMany([event]);
+  }
+
+  async appendMany(events: readonly DomainEvent[]): Promise<void> {
+    await this.prisma.domainEvent.createMany({
+      data: events.map(event => ({
         eventId: event.eventId,
         name: event.name,
         context: event.context,
@@ -202,7 +206,7 @@ export class PrismaEventStore implements EventStore {
         commitId: event.commitId,
         payload: prismaPayload(cloneJsonPayload(event.payload)),
         occurredAt: event.occurredAt,
-      },
+      })),
     });
   }
 

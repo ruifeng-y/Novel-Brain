@@ -9,6 +9,8 @@ import {
 } from "../../src/memory/projections/memoryProjection";
 import { createDomainEvent } from "../../src/safety/domain/domainEvent";
 import { createVersionReference, createVersionSet } from "../../src/shared/domain/versioning";
+import { hashContent } from "../../src/shared/domain/contentHash";
+import { createCanonicalFact } from "../../src/narrative/canon/domain/canonicalFact";
 
 const now = new Date("2026-10-02T00:00:00.000Z");
 
@@ -51,7 +53,20 @@ describe("memory and context", () => {
     expect(projection.scenes["scene-1"]).toEqual({
       revisionId: "scene-rev-2",
       summary: "Lin Chuan entered the Northern Sect gate.",
+      sourceLength: "Lin Chuan entered the Northern Sect gate.".length,
+      sourceHash: hashContent("Lin Chuan entered the Northern Sect gate."),
     });
+  });
+
+  it("derives bounded summaries instead of copying long scene text", () => {
+    const text = "x".repeat(1000);
+    const scene = sceneWithText("scene-rev-2", text);
+    const projection = rebuildMemoryProjection([], [scene]);
+    const memory = projection.scenes[scene.id];
+    expect(memory?.summary.length).toBeLessThanOrEqual(160);
+    expect(memory?.summary.endsWith("...")).toBe(true);
+    expect(memory?.sourceLength).toBe(text.length);
+    expect(memory?.sourceHash).toBe(hashContent(text));
   });
 
   it("detects stale memory using the scene version set", () => {
@@ -59,6 +74,26 @@ describe("memory and context", () => {
     const projection = rebuildMemoryProjection([], [scene]);
     const versionSet = createVersionSet({
       scene: createVersionReference("Scene", "scene-1", "scene-rev-3"),
+    });
+    expect(isMemoryProjectionStale(projection, versionSet)).toBe(true);
+  });
+
+  it("detects stale canonical dependencies outside scene revisions", () => {
+    const scene = sceneWithText("scene-rev-2", "Old text");
+    const fact = createCanonicalFact({
+      id: "fact-memory",
+      novelId: "novel-1",
+      type: "world_rule",
+      content: { rule: "Old rule" },
+      revisionId: "fact-rev-1",
+      commitId: "commit-1",
+      createdAt: now,
+    });
+    const projection = rebuildMemoryProjection([], [scene], {
+      canonicalFacts: [fact],
+    });
+    const versionSet = createVersionSet({
+      canonicalFact: createVersionReference("CanonicalFact", fact.id, "fact-rev-2"),
     });
     expect(isMemoryProjectionStale(projection, versionSet)).toBe(true);
   });

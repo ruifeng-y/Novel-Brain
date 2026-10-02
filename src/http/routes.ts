@@ -151,6 +151,12 @@ export function registerNovelBrainRoutes(app: FastifyInstance, dependencies: Api
 
   app.post("/novels/:novelId/scenes", async (request, reply) => {
     const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
+    const novel = await dependencies.novels.findById(params.novelId);
+    if (!novel) return reply.code(404).send({ error: "Novel not found" });
+    const actorId = request.headers["x-author-id"];
+    if (typeof actorId !== "string" || actorId !== novel.authorId) {
+      return reply.code(403).send({ error: "Forbidden" });
+    }
     const body = z
       .object({ id: z.string().min(1), chapterId: z.string().min(1), title: z.string().min(1) })
       .parse(request.body);
@@ -167,6 +173,12 @@ export function registerNovelBrainRoutes(app: FastifyInstance, dependencies: Api
 
   app.post("/novels/:novelId/generation-tasks", async (request, reply) => {
     const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
+    const novel = await dependencies.novels.findById(params.novelId);
+    if (!novel) return reply.code(404).send({ error: "Novel not found" });
+    const actorId = request.headers["x-author-id"];
+    if (typeof actorId !== "string" || actorId !== novel.authorId) {
+      return reply.code(403).send({ error: "Forbidden" });
+    }
     const body = z
       .object({
         id: z.string().min(1),
@@ -176,6 +188,10 @@ export function registerNovelBrainRoutes(app: FastifyInstance, dependencies: Api
         basedOnVersionSet: versionSetSchema,
       })
       .parse(request.body);
+    const targetScene = await dependencies.scenes.findById(body.targetSceneId);
+    if (!targetScene || targetScene.novelId !== params.novelId) {
+      return reply.code(404).send({ error: "Target scene not found" });
+    }
     const task = createGenerationTask({
       ...body,
       novelId: params.novelId,

@@ -15,7 +15,7 @@ import {
   commitSceneText,
   type Scene,
 } from "../../manuscript/domain/scene";
-import { replaceTargetSpan } from "../../manuscript/domain/targetSpan";
+import { rebaseSpanAnchors, replaceTargetSpan } from "../../manuscript/domain/targetSpan";
 import type { CanonicalFact } from "../../narrative/canon/domain/canonicalFact";
 import { replaceCanonicalFact } from "../../narrative/canon/domain/canonicalFact";
 import type { StateRecord } from "../../narrative/state/domain/stateRecord";
@@ -27,8 +27,16 @@ import {
   markNarrativeCommitStale,
   type NarrativeCommit,
 } from "../domain/narrativeCommit";
-import { createDomainEvent, type DomainEvent } from "../domain/domainEvent";
+import type { DomainEvent } from "../domain/domainEvent";
 import type { EventStore } from "../infrastructure/eventStore";
+import { createSceneCommittedEvent } from "../../manuscript/domain/manuscriptEvents";
+import {
+  createCanonicalFactChangedEvent,
+  createCharacterStateChangedEvent,
+  createWorldStateChangedEvent,
+  createPlotStateChangedEvent,
+} from "../../narrative/state/domain/narrativeStateEvents";
+import { createNarrativeCommitRecordedEvent } from "../../production/domain/aiProductionEvents";
 
 export interface CommitCandidateRepositories {
   readonly scenes: RevisionedRepository<Scene>;
@@ -188,10 +196,7 @@ async function prepareChange(
           });
     const nextSpanAnchors =
       change.type === "local_text"
-        ? {
-            ...original.spanAnchors,
-            [change.targetSpan.anchorId]: change.replacement,
-          }
+        ? rebaseSpanAnchors(original, change.targetSpan, change.replacement)
         : {};
     const next = commitSceneText({
       scene: original,
@@ -208,10 +213,8 @@ async function prepareChange(
       next,
       resultKey,
       resultReference: createVersionReference("Scene", original.id, nextRevisionId),
-      event: createDomainEvent({
+      event: createSceneCommittedEvent({
         eventId: `event:${commitId}:${original.id}:${resultKey}`,
-        name: "SceneCommitted",
-        context: "manuscript",
         novelId: candidate.novelId,
         objectId: original.id,
         revisionId: nextRevisionId,
@@ -240,10 +243,8 @@ async function prepareChange(
       next,
       resultKey,
       resultReference: createVersionReference("CanonicalFact", original.id, nextRevisionId),
-      event: createDomainEvent({
+      event: createCanonicalFactChangedEvent({
         eventId: `event:${commitId}:${original.id}:${resultKey}`,
-        name: "CanonicalFactChanged",
-        context: "narrative_state",
         novelId: candidate.novelId,
         objectId: original.id,
         revisionId: nextRevisionId,
@@ -271,22 +272,19 @@ async function prepareChange(
     next,
     resultKey,
     resultReference: createVersionReference("StateRecord", original.id, nextRevisionId),
-    event: createDomainEvent({
-      eventId: `event:${commitId}:${original.id}:${resultKey}`,
-      name:
-        next.type === "character_state"
-          ? "CharacterStateChanged"
-          : next.type === "world_state"
-            ? "WorldStateChanged"
-            : "PlotStateChanged",
-      context: "narrative_state",
-      novelId: candidate.novelId,
-      objectId: original.id,
-      revisionId: nextRevisionId,
-      commitId,
-      payload: { candidateId: candidate.id },
-      occurredAt: now,
-    }),
+    event: (next.type === "character_state"
+      ? createCharacterStateChangedEvent
+      : next.type === "world_state"
+        ? createWorldStateChangedEvent
+        : createPlotStateChangedEvent)({
+          eventId: `event:${commitId}:${original.id}:${resultKey}`,
+          novelId: candidate.novelId,
+          objectId: original.id,
+          revisionId: nextRevisionId,
+          commitId,
+          payload: { candidateId: candidate.id },
+          occurredAt: now,
+        }),
   };
 }
 
@@ -358,13 +356,26 @@ export async function commitCandidate(input: {
     const resultingVersionSet: Record<string, VersionReference> = {};
     for (const change of prepared) resultingVersionSet[change.resultKey] = change.resultReference;
 
-    for (const change of prepared) await input.eventStore.append(change.event);
-
     const committed = markNarrativeCommitCommitted({
       commit: pendingCommit,
       resultingVersionSet: Object.freeze(resultingVersionSet),
       committedAt: input.input.now,
     });
+    await input.eventStore.appendMany([
+      ...prepared.map(change => change.event),
+      createNarrativeCommitRecordedEvent({
+        eventId: `event:${committed.id}:recorded`,
+        novelId: candidate.novelId,
+        objectId: committed.id,
+        revisionId: committed.id,
+        commitId: committed.id,
+        payload: {
+          candidateId: candidate.id,
+          resultingVersionSet,
+        },
+        occurredAt: input.input.now,
+      }),
+    ]);
     await input.repositories.narrativeCommits.save(committed);
     return committed;
   } catch (error) {

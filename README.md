@@ -10,6 +10,12 @@ Novel Brain's core engine maintains a canonical narrative representation and rou
 - `NarrativeCommit` coordinates one coherent canonical transition.
 - Tasks and candidates use `basedOnVersionSet`, not a global novel version.
 - Memory and retrieval data is derived and rebuildable.
+- Target spans use scene-revision-bound stable anchor metadata and content hashes.
+- Memory summaries are bounded derived metadata, not full manuscript copies.
+- Event contracts are created by producing contexts; State Safety provides generic persistence and recovery mechanics.
+- Multi-event audit writes use atomic batch persistence.
+- HTTP child creation verifies novel existence and author ownership.
+- Rollback is forward-only and compensates state when audit persistence fails.
 
 ## Local Commands
 

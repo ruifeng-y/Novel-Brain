@@ -109,9 +109,14 @@ export function assembleContext(input: {
   const selectedMemory: MemoryProjection = deepFreeze({
     novelId: input.memory.novelId,
     sourceRevisionSet: Object.fromEntries(
-      Object.entries(input.memory.sourceRevisionSet).filter(([sceneId]) =>
-        selectedMemorySceneIds.has(sceneId),
-      ),
+      Object.entries(input.memory.sourceRevisionSet).filter(([key]) => {
+        const [aggregateType, objectId] = key.split(":");
+        return (
+          (aggregateType === "Scene" && selectedMemorySceneIds.has(objectId ?? "")) ||
+          (aggregateType === "CanonicalFact" && selectedFactIds.has(objectId ?? "")) ||
+          (aggregateType === "StateRecord" && selectedStateIds.has(objectId ?? ""))
+        );
+      }),
     ),
     scenes: Object.fromEntries(
       Object.entries(input.memory.scenes).filter(([sceneId]) =>

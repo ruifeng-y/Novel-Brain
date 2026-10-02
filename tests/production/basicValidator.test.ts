@@ -20,7 +20,15 @@ function scene() {
   return commitSceneText({
     scene: initial,
     text: "Lin Chuan waited. The Northern Sect gate stayed closed.",
-    spanAnchors: { "span-2": "The Northern Sect gate stayed closed." },
+    spanAnchors: {
+      "span-2": {
+        anchorId: "span-2",
+        start: 18,
+        end: 55,
+        text: "The Northern Sect gate stayed closed.",
+        sourceContentHash: hashContent("The Northern Sect gate stayed closed."),
+      },
+    },
     revisionId: "scene-rev-2",
     commitId: "initial-commit",
     updatedAt: now,
@@ -227,31 +235,26 @@ describe("basic validator", () => {
       mustPreserve: [],
       createdAt: now,
     });
-    const ambiguousScene = {
-      ...scene(),
-      text: "Repeated. Repeated.",
-      spanAnchors: { "span-duplicate": "Repeated." },
-    } as Scene;
-    const ambiguous = validateCandidate({
-      validationId: "validation-ambiguous",
+    const textMismatch = validateCandidate({
+      validationId: "validation-text-mismatch",
       candidate: candidate({
         type: "local_text",
         sceneId: "scene-1",
         targetSpan: {
-          anchorId: "span-duplicate",
-          text: "Repeated.",
-          sourceContentHash: hashContent("Repeated."),
+          anchorId: "span-2",
+          text: "Wrong text",
+          sourceContentHash: hashContent("Wrong text"),
         },
         replacement: "Replacement.",
       }),
-      scene: ambiguousScene,
+      scene: scene(),
       mustPreserve: [],
       createdAt: now,
     });
 
     expect(missingAnchor.run.findings[0]?.code).toBe("TARGET_ANCHOR_NOT_FOUND");
     expect(hashMismatch.run.findings[0]?.code).toBe("TARGET_SOURCE_HASH_MISMATCH");
-    expect(ambiguous.run.findings[0]?.code).toBe("TARGET_SPAN_AMBIGUOUS");
+    expect(textMismatch.run.findings[0]?.code).toBe("TARGET_TEXT_MISMATCH");
   });
 
   it("rejects duplicate composite targets", () => {

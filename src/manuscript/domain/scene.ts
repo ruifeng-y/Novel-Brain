@@ -1,7 +1,25 @@
 import type { DomainId, RevisionId } from "../../shared/domain/ids";
+import { hashContent } from "../../shared/domain/contentHash";
 
 export { resolveTargetSpan, replaceTargetSpan } from "./targetSpan";
 export type { ResolvedSpan, TargetSpan } from "./targetSpan";
+
+export interface SceneSpanAnchor {
+  readonly anchorId: string;
+  readonly revisionId: RevisionId;
+  readonly start: number;
+  readonly end: number;
+  readonly text: string;
+  readonly sourceContentHash: string;
+}
+
+export interface SceneSpanAnchorInput {
+  readonly anchorId: string;
+  readonly start: number;
+  readonly end: number;
+  readonly text: string;
+  readonly sourceContentHash: string;
+}
 
 export interface Scene {
   readonly id: DomainId;
@@ -9,7 +27,7 @@ export interface Scene {
   readonly chapterId: DomainId;
   readonly title: string;
   readonly text: string;
-  readonly spanAnchors: Readonly<Record<string, string>>;
+  readonly spanAnchors: Readonly<Record<string, SceneSpanAnchor>>;
   readonly currentRevisionId: RevisionId;
   readonly lastCommitId: DomainId;
   readonly createdAt: Date;
@@ -20,7 +38,7 @@ export interface SceneRevision {
   readonly sceneId: DomainId;
   readonly revisionId: RevisionId;
   readonly text: string;
-  readonly spanAnchors: Readonly<Record<string, string>>;
+  readonly spanAnchors: Readonly<Record<string, SceneSpanAnchor>>;
   readonly commitId: DomainId;
 }
 
@@ -36,19 +54,33 @@ export function toSceneRevision(scene: Scene): SceneRevision {
 
 function assertSpanAnchors(
   text: string,
-  spanAnchors: Readonly<Record<string, string>>,
-): void {
-  for (const [anchorId, anchoredText] of Object.entries(spanAnchors)) {
-    if (!anchorId.trim()) throw new Error("spanAnchors keys must not be empty");
-    if (!anchoredText) throw new Error(`Target span anchor text is empty: ${anchorId}`);
-    const start = text.indexOf(anchoredText);
-    if (start < 0) {
-      throw new Error(`Target span anchor text is not present in scene: ${anchorId}`);
+  revisionId: RevisionId,
+  spanAnchors: Readonly<Record<string, SceneSpanAnchorInput>>,
+): Readonly<Record<string, SceneSpanAnchor>> {
+  const normalized: Record<string, SceneSpanAnchor> = {};
+  for (const [key, input] of Object.entries(spanAnchors)) {
+    if (!key.trim()) throw new Error("spanAnchors keys must not be empty");
+    if (input.anchorId !== key) throw new Error(`Target span anchor id mismatch: ${key}`);
+    if (!Number.isInteger(input.start) || !Number.isInteger(input.end) || input.start < 0 || input.end <= input.start || input.end > text.length) {
+      throw new Error(`Target span anchor range is invalid: ${key}`);
     }
-    if (text.indexOf(anchoredText, start + 1) >= 0) {
-      throw new Error(`Target span anchor text is ambiguous: ${anchorId}`);
+    const actualText = text.slice(input.start, input.end);
+    if (actualText !== input.text) {
+      throw new Error(`Target span anchor text does not match scene text: ${key}`);
     }
+    if (hashContent(actualText) !== input.sourceContentHash) {
+      throw new Error(`Target span source hash does not match scene text: ${key}`);
+    }
+    normalized[key] = Object.freeze({
+      anchorId: key,
+      revisionId,
+      start: input.start,
+      end: input.end,
+      text: input.text,
+      sourceContentHash: input.sourceContentHash,
+    });
   }
+  return Object.freeze(normalized);
 }
 
 export function createScene(input: {
@@ -83,7 +115,7 @@ export function createScene(input: {
 export function commitSceneText(input: {
   scene: Scene;
   text: string;
-  spanAnchors?: Readonly<Record<string, string>>;
+  spanAnchors?: Readonly<Record<string, SceneSpanAnchorInput>>;
   revisionId: RevisionId;
   commitId: DomainId;
   updatedAt: Date;
@@ -92,11 +124,11 @@ export function commitSceneText(input: {
   if (!input.commitId) throw new Error("commitId is required");
   if (input.updatedAt < input.scene.updatedAt) throw new Error("updatedAt cannot move backward");
   const spanAnchors = input.spanAnchors ?? {};
-  assertSpanAnchors(input.text, spanAnchors);
+  const normalizedAnchors = assertSpanAnchors(input.text, input.revisionId, spanAnchors);
   return Object.freeze({
     ...input.scene,
     text: input.text,
-    spanAnchors: Object.freeze({ ...spanAnchors }),
+    spanAnchors: normalizedAnchors,
     currentRevisionId: input.revisionId,
     lastCommitId: input.commitId,
     updatedAt: input.updatedAt,

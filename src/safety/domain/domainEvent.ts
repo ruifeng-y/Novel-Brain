@@ -25,20 +25,6 @@ export type ProducingContext =
   | "memory"
   | "platform";
 
-const EVENT_CONTEXTS: Readonly<Record<DomainEventName, ProducingContext>> = {
-  NovelCreated: "narrative_state",
-  SceneCommitted: "manuscript",
-  CanonicalFactChanged: "narrative_state",
-  CharacterStateChanged: "narrative_state",
-  WorldStateChanged: "narrative_state",
-  PlotStateChanged: "narrative_state",
-  CandidateCreated: "ai_production",
-  ValidationCompleted: "ai_production",
-  ReviewDecisionRecorded: "ai_production",
-  NarrativeCommitRecorded: "ai_production",
-  MemoryProjectionRebuilt: "memory",
-};
-
 export interface DomainEvent {
   readonly eventId: DomainId;
   readonly name: DomainEventName;
@@ -98,9 +84,6 @@ export function createDomainEvent(input: {
   if (!input.objectId) throw new Error("objectId is required");
   if (!input.revisionId) throw new Error("revisionId is required");
   assertJsonPayload(input.payload);
-  if (EVENT_CONTEXTS[input.name] !== input.context) {
-    throw new Error(`Event ${input.name} cannot be produced by context ${input.context}`);
-  }
 
   return Object.freeze({
     eventId: input.eventId,
