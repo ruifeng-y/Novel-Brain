@@ -7,7 +7,7 @@ import type { ValidationRun } from "../../src/production/domain/validationRun";
 import type { ReviewDecision } from "../../src/production/domain/reviewDecision";
 import type { CanonicalFact } from "../../src/narrative/canon/domain/canonicalFact";
 import type { StateRecord } from "../../src/narrative/state/domain/stateRecord";
-import type { Scene } from "../../src/manuscript/domain/scene";
+import { commitSceneText, type Scene } from "../../src/manuscript/domain/scene";
 import type { Novel } from "../../src/narrative/novel/domain/novel";
 import type { NarrativeCommit } from "../../src/safety/domain/narrativeCommit";
 import { DeterministicRuntime } from "../../src/production/runtime/deterministicRuntime";
@@ -349,6 +349,163 @@ describe("core engine API", () => {
     });
     expect(response.statusCode).toBe(400);
     expect(response.json()).toMatchObject({ error: "Bad Request" });
+    await app.close();
+  });
+
+  it("commits a composite candidate over scene and state changes", async () => {
+    const { app, dependencies } = server();
+    await app.inject({
+      method: "POST",
+      url: "/novels",
+      payload: { id: "novel-composite-api", authorId: "author-1", title: "Composite API" },
+    });
+    const sceneResponse = await app.inject({
+      method: "POST",
+      url: "/novels/novel-composite-api/scenes",
+      payload: { id: "scene-composite-api", chapterId: "chapter-1", title: "Composite Scene" },
+    });
+    const scene = sceneResponse.json();
+    await dependencies.stateRecords.save({
+      id: "state-composite-api",
+      novelId: "novel-composite-api",
+      type: "character_state",
+      subjectId: "fact-composite-api",
+      position: { sceneId: scene.id, ordinal: 1 },
+      content: { condition: "healthy" },
+      currentRevisionId: "state-rev-1",
+      lastCommitId: "initial",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await app.inject({
+      method: "POST",
+      url: "/novels/novel-composite-api/generation-tasks",
+      payload: {
+        id: "task-composite-api",
+        operation: "rewrite",
+        targetSceneId: scene.id,
+        intent: "Update scene and state.",
+        basedOnVersionSet: {
+          scene: {
+            aggregateType: "Scene",
+            objectId: scene.id,
+            revisionId: scene.currentRevisionId,
+          },
+          stateRecord: {
+            aggregateType: "StateRecord",
+            objectId: "state-composite-api",
+            revisionId: "state-rev-1",
+          },
+        },
+      },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/generation-tasks/task-composite-api/candidates",
+      payload: {
+        id: "candidate-composite-api",
+        agentRole: "writer",
+        modelPolicy: { provider: "test", model: "deterministic", maxOutputTokens: 1000 },
+        change: {
+          type: "composite",
+          changes: [
+            { type: "text", sceneId: scene.id, text: "Composite scene text" },
+            {
+              type: "structured_state",
+              stateRecordId: "state-composite-api",
+              content: { condition: "injured" },
+            },
+          ],
+        },
+      },
+    });
+    const response = await app.inject({
+      method: "POST",
+      url: "/candidates/candidate-composite-api/commit",
+      payload: {
+        commitId: "commit-composite-api",
+        validationId: "validation-composite-api",
+        reviewId: "review-composite-api",
+        actorId: "author-1",
+        mustPreserve: [],
+      },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect((await dependencies.scenes.findById(scene.id))?.text).toBe("Composite scene text");
+    expect((await dependencies.stateRecords.findById("state-composite-api"))?.content).toEqual({
+      condition: "injured",
+    });
+    const events = await dependencies.eventStore.listByNovel("novel-composite-api");
+    expect(events.map(event => event.name)).toEqual(["SceneCommitted", "CharacterStateChanged"]);
+    await app.close();
+  });
+
+  it("returns a controlled commit conflict for stale versions without corrupting state", async () => {
+    const { app, dependencies } = server();
+    await app.inject({
+      method: "POST",
+      url: "/novels",
+      payload: { id: "novel-stale-api", authorId: "author-1", title: "Stale API" },
+    });
+    const sceneResponse = await app.inject({
+      method: "POST",
+      url: "/novels/novel-stale-api/scenes",
+      payload: { id: "scene-stale-api", chapterId: "chapter-1", title: "Stale Scene" },
+    });
+    const scene = sceneResponse.json() as Scene;
+    await app.inject({
+      method: "POST",
+      url: "/novels/novel-stale-api/generation-tasks",
+      payload: {
+        id: "task-stale-api",
+        operation: "rewrite",
+        targetSceneId: scene.id,
+        intent: "Rewrite stale scene.",
+        basedOnVersionSet: {
+          scene: {
+            aggregateType: "Scene",
+            objectId: scene.id,
+            revisionId: scene.currentRevisionId,
+          },
+        },
+      },
+    });
+    await app.inject({
+      method: "POST",
+      url: "/generation-tasks/task-stale-api/candidates",
+      payload: {
+        id: "candidate-stale-api",
+        agentRole: "writer",
+        modelPolicy: { provider: "test", model: "deterministic", maxOutputTokens: 1000 },
+        change: { type: "text", sceneId: scene.id, text: "Candidate stale text" },
+      },
+    });
+    await dependencies.scenes.save(
+      commitSceneText({
+        scene,
+        text: "Author updated text",
+        revisionId: "scene-rev-author",
+        commitId: "author-edit",
+        updatedAt: new Date(),
+      }),
+    );
+    const response = await app.inject({
+      method: "POST",
+      url: "/candidates/candidate-stale-api/commit",
+      payload: {
+        commitId: "commit-stale-api",
+        validationId: "validation-stale-api",
+        reviewId: "review-stale-api",
+        actorId: "author-1",
+        mustPreserve: [],
+      },
+    });
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toMatchObject({ error: "Commit Conflict" });
+    expect((await dependencies.scenes.findById(scene.id))?.text).toBe("Author updated text");
+    expect(await dependencies.eventStore.listByNovel("novel-stale-api")).toEqual([]);
     await app.close();
   });
 });

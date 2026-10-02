@@ -4408,7 +4408,7 @@ export function registerNovelBrainRoutes(app: FastifyInstance, dependencies: Api
       new Date(),
     );
     await dependencies.candidates.save(selectedCandidate);
-    const validation = createValidationRun({
+    const validationRun = createValidationRun({
       id: preValidation.run.id,
       candidateId: selectedCandidate.id,
       candidateRevisionId: selectedCandidate.currentRevisionId,
@@ -4420,34 +4420,43 @@ export function registerNovelBrainRoutes(app: FastifyInstance, dependencies: Api
 
     const reviewDecision = createReviewDecision({
       id: body.reviewId,
-      candidateId: candidate.id,
-      candidateRevisionId: candidate.currentRevisionId,
+      candidateId: selectedCandidate.id,
+      candidateRevisionId: selectedCandidate.currentRevisionId,
       decision: "approve",
       decidedBy: "human",
       actorId: body.actorId,
       reason: "",
       createdAt: new Date(),
     });
-    await dependencies.validationRuns.save(validation.run);
+    await dependencies.validationRuns.save(validationRun);
     await dependencies.reviewDecisions.save(reviewDecision);
-    const commit = await commitCandidate({
-      repositories: {
-        scenes: dependencies.scenes,
-        candidates: dependencies.candidates,
-        canonicalFacts: dependencies.canonicalFacts,
-        stateRecords: dependencies.stateRecords,
-        narrativeCommits: dependencies.narrativeCommits,
-      },
-      eventStore: dependencies.eventStore,
-      input: {
-        commitId: body.commitId,
-        candidateId: selectedCandidate.id,
-        validationRuns: [validation],
-        reviewDecision,
-        now: new Date(),
-      },
-    });
-    return reply.code(201).send(commit);
+    try {
+      const commit = await commitCandidate({
+        repositories: {
+          scenes: dependencies.scenes,
+          candidates: dependencies.candidates,
+          canonicalFacts: dependencies.canonicalFacts,
+          stateRecords: dependencies.stateRecords,
+          narrativeCommits: dependencies.narrativeCommits,
+        },
+        eventStore: dependencies.eventStore,
+        input: {
+          commitId: body.commitId,
+          candidateId: selectedCandidate.id,
+          validationRuns: [validationRun],
+          reviewDecision,
+          now: new Date(),
+        },
+      });
+      return reply.code(201).send(commit);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Stale dependency:")) {
+        return reply
+          .code(409)
+          .send({ error: "Commit Conflict", reason: error.message });
+      }
+      throw error;
+    }
   });
 
   app.get("/novels/:novelId/events", async request => {
@@ -4485,7 +4494,7 @@ export function createNovelBrainServer(dependencies: ApiDependencies) {
 
 Run: `npm test -- --run tests/http/api.test.ts`
 
-Expected: PASS with 5 API tests.
+Expected: PASS with 7 API tests.
 
 - [ ] **Step 6: Commit**
 

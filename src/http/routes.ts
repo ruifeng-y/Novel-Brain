@@ -278,24 +278,33 @@ export function registerNovelBrainRoutes(app: FastifyInstance, dependencies: Api
     await dependencies.validationRuns.save(validationRun);
     await dependencies.reviewDecisions.save(reviewDecision);
 
-    const commit = await commitCandidate({
-      repositories: {
-        scenes: dependencies.scenes,
-        candidates: dependencies.candidates,
-        canonicalFacts: dependencies.canonicalFacts,
-        stateRecords: dependencies.stateRecords,
-        narrativeCommits: dependencies.narrativeCommits,
-      },
-      eventStore: dependencies.eventStore,
-      input: {
-        commitId: body.commitId,
-        candidateId: selectedCandidate.id,
-        validationRuns: [validationRun],
-        reviewDecision,
-        now: new Date(),
-      },
-    });
-    return reply.code(201).send(commit);
+    try {
+      const commit = await commitCandidate({
+        repositories: {
+          scenes: dependencies.scenes,
+          candidates: dependencies.candidates,
+          canonicalFacts: dependencies.canonicalFacts,
+          stateRecords: dependencies.stateRecords,
+          narrativeCommits: dependencies.narrativeCommits,
+        },
+        eventStore: dependencies.eventStore,
+        input: {
+          commitId: body.commitId,
+          candidateId: selectedCandidate.id,
+          validationRuns: [validationRun],
+          reviewDecision,
+          now: new Date(),
+        },
+      });
+      return reply.code(201).send(commit);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Stale dependency:")) {
+        return reply
+          .code(409)
+          .send({ error: "Commit Conflict", reason: error.message });
+      }
+      throw error;
+    }
   });
 
   app.get("/novels/:novelId/events", async request => {
