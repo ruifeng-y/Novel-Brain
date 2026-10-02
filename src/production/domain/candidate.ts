@@ -55,6 +55,10 @@ function isTerminalCandidateStatus(status: CandidateStatus): boolean {
   return status === "selected" || status === "rejected" || status === "outdated" || status === "archived";
 }
 
+function lifecycleRevisionId(candidate: Candidate, state: CandidateStatus): RevisionId {
+  return `${candidate.currentRevisionId}:${state}`;
+}
+
 export function createCandidate(input: {
   id: DomainId;
   taskId: DomainId;
@@ -109,7 +113,12 @@ export function selectCandidate(candidate: Candidate, updatedAt: Date): Candidat
   if (candidate.status !== "validated" && candidate.status !== "under_review") {
     throw new Error("Only a validated or under-review candidate can be selected");
   }
-  return Object.freeze({ ...candidate, status: "selected", updatedAt });
+  return Object.freeze({
+    ...candidate,
+    currentRevisionId: lifecycleRevisionId(candidate, "selected"),
+    status: "selected",
+    updatedAt,
+  });
 }
 
 export function markCandidateValidated(candidate: Candidate, updatedAt: Date): Candidate {
@@ -119,7 +128,12 @@ export function markCandidateValidated(candidate: Candidate, updatedAt: Date): C
   if (candidate.status !== "generated" && candidate.status !== "validating") {
     throw new Error("Only a generated or validating candidate can become validated");
   }
-  return Object.freeze({ ...candidate, status: "validated", updatedAt });
+  return Object.freeze({
+    ...candidate,
+    currentRevisionId: lifecycleRevisionId(candidate, "validated"),
+    status: "validated",
+    updatedAt,
+  });
 }
 
 export function rejectCandidate(candidate: Candidate, reason: string): Candidate {
@@ -127,12 +141,22 @@ export function rejectCandidate(candidate: Candidate, reason: string): Candidate
     throw new Error("Terminal candidate cannot be rejected");
   }
   if (!reason.trim()) throw new Error("rejection reason is required");
-  return Object.freeze({ ...candidate, status: "rejected", rejectionReason: reason.trim() });
+  return Object.freeze({
+    ...candidate,
+    currentRevisionId: lifecycleRevisionId(candidate, "rejected"),
+    status: "rejected",
+    rejectionReason: reason.trim(),
+  });
 }
 
 export function markCandidateOutdated(candidate: Candidate, updatedAt: Date): Candidate {
   if (isTerminalCandidateStatus(candidate.status)) {
     throw new Error("Terminal candidate cannot become outdated");
   }
-  return Object.freeze({ ...candidate, status: "outdated", updatedAt });
+  return Object.freeze({
+    ...candidate,
+    currentRevisionId: lifecycleRevisionId(candidate, "outdated"),
+    status: "outdated",
+    updatedAt,
+  });
 }
