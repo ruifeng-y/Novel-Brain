@@ -1,4 +1,15 @@
 import type { DomainEvent } from "../domain/domainEvent";
+import { deepFreeze } from "../../shared/domain/immutable";
+
+function cloneValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(cloneValue);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, nested]) => [key, cloneValue(nested)]),
+    );
+  }
+  return value;
+}
 
 export interface EventStore {
   append(event: DomainEvent): Promise<void>;
@@ -14,7 +25,12 @@ export class InMemoryEventStore implements EventStore {
       throw new Error(`Duplicate event id: ${event.eventId}`);
     }
     this.eventIds.add(event.eventId);
-    this.events.push(event);
+    this.events.push(
+      deepFreeze({
+        ...event,
+        payload: cloneValue(event.payload) as Record<string, unknown>,
+      }),
+    );
   }
 
   async listByNovel(novelId: string): Promise<readonly DomainEvent[]> {

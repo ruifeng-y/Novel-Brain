@@ -1,4 +1,5 @@
 import type { DomainId, RevisionId } from "../../shared/domain/ids";
+import { deepFreeze } from "../../shared/domain/immutable";
 
 export type DomainEventName =
   | "NovelCreated"
@@ -19,6 +20,20 @@ export type ProducingContext =
   | "ai_production"
   | "memory"
   | "platform";
+
+const EVENT_CONTEXTS: Readonly<Record<DomainEventName, ProducingContext>> = {
+  NovelCreated: "narrative_state",
+  SceneCommitted: "manuscript",
+  CanonicalFactChanged: "narrative_state",
+  CharacterStateChanged: "narrative_state",
+  WorldStateChanged: "narrative_state",
+  PlotStateChanged: "narrative_state",
+  CandidateCreated: "ai_production",
+  ValidationCompleted: "ai_production",
+  ReviewDecisionRecorded: "ai_production",
+  NarrativeCommitRecorded: "ai_production",
+  MemoryProjectionRebuilt: "memory",
+};
 
 export interface DomainEvent {
   readonly eventId: DomainId;
@@ -47,6 +62,9 @@ export function createDomainEvent(input: {
   if (!input.novelId) throw new Error("novelId is required");
   if (!input.objectId) throw new Error("objectId is required");
   if (!input.revisionId) throw new Error("revisionId is required");
+  if (EVENT_CONTEXTS[input.name] !== input.context) {
+    throw new Error(`Event ${input.name} cannot be produced by context ${input.context}`);
+  }
 
   return Object.freeze({
     eventId: input.eventId,
@@ -56,7 +74,7 @@ export function createDomainEvent(input: {
     objectId: input.objectId,
     revisionId: input.revisionId,
     commitId: input.commitId,
-    payload: Object.freeze({ ...input.payload }),
+    payload: deepFreeze({ ...input.payload }),
     occurredAt: input.occurredAt,
   });
 }

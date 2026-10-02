@@ -2449,6 +2449,8 @@ Expected: FAIL because the event modules do not exist.
 ```ts
 import type { DomainId, RevisionId } from "../../shared/domain/ids";
 
+import { deepFreeze } from "../../shared/domain/immutable";
+
 export type DomainEventName =
   | "NovelCreated"
   | "SceneCommitted"
@@ -2468,6 +2470,20 @@ export type ProducingContext =
   | "ai_production"
   | "memory"
   | "platform";
+
+const EVENT_CONTEXTS: Readonly<Record<DomainEventName, ProducingContext>> = {
+  NovelCreated: "narrative_state",
+  SceneCommitted: "manuscript",
+  CanonicalFactChanged: "narrative_state",
+  CharacterStateChanged: "narrative_state",
+  WorldStateChanged: "narrative_state",
+  PlotStateChanged: "narrative_state",
+  CandidateCreated: "ai_production",
+  ValidationCompleted: "ai_production",
+  ReviewDecisionRecorded: "ai_production",
+  NarrativeCommitRecorded: "ai_production",
+  MemoryProjectionRebuilt: "memory",
+};
 
 export interface DomainEvent {
   readonly eventId: DomainId;
@@ -2496,6 +2512,9 @@ export function createDomainEvent(input: {
   if (!input.novelId) throw new Error("novelId is required");
   if (!input.objectId) throw new Error("objectId is required");
   if (!input.revisionId) throw new Error("revisionId is required");
+  if (EVENT_CONTEXTS[input.name] !== input.context) {
+    throw new Error(`Event ${input.name} cannot be produced by context ${input.context}`);
+  }
 
   return Object.freeze({
     eventId: input.eventId,
@@ -2505,7 +2524,7 @@ export function createDomainEvent(input: {
     objectId: input.objectId,
     revisionId: input.revisionId,
     commitId: input.commitId,
-    payload: Object.freeze({ ...input.payload }),
+    payload: deepFreeze({ ...input.payload }),
     occurredAt: input.occurredAt,
   });
 }
@@ -2513,6 +2532,17 @@ export function createDomainEvent(input: {
 
 ```ts
 import type { DomainEvent } from "../domain/domainEvent";
+import { deepFreeze } from "../../shared/domain/immutable";
+
+function cloneValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(cloneValue);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>).map(([key, nested]) => [key, cloneValue(nested)]),
+    );
+  }
+  return value;
+}
 
 export interface EventStore {
   append(event: DomainEvent): Promise<void>;
@@ -2528,7 +2558,12 @@ export class InMemoryEventStore implements EventStore {
       throw new Error(`Duplicate event id: ${event.eventId}`);
     }
     this.eventIds.add(event.eventId);
-    this.events.push(event);
+    this.events.push(
+      deepFreeze({
+        ...event,
+        payload: cloneValue(event.payload) as Record<string, unknown>,
+      }),
+    );
   }
 
   async listByNovel(novelId: string): Promise<readonly DomainEvent[]> {
@@ -2541,7 +2576,7 @@ export class InMemoryEventStore implements EventStore {
 
 Run: `npm test -- --run tests/safety/events.test.ts`
 
-Expected: PASS with 3 event tests.
+Expected: PASS with 7 event tests.
 
 - [ ] **Step 5: Commit**
 
