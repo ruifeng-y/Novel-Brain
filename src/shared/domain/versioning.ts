@@ -1,5 +1,6 @@
-export type DomainId = string;
-export type RevisionId = string;
+import type { DomainId, RevisionId } from "./ids";
+
+export type { DomainId, RevisionId } from "./ids";
 
 export type AggregateType =
   | "Novel"
