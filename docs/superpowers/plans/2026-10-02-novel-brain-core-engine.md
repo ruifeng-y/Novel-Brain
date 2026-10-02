@@ -2451,6 +2451,10 @@ import type { DomainId, RevisionId } from "../../shared/domain/ids";
 
 import { deepFreeze } from "../../shared/domain/immutable";
 
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonValue[] | { readonly [key: string]: JsonValue };
+export type JsonPayload = Readonly<Record<string, JsonValue>>;
+
 export type DomainEventName =
   | "NovelCreated"
   | "SceneCommitted"
@@ -2493,8 +2497,39 @@ export interface DomainEvent {
   readonly objectId: DomainId;
   readonly revisionId: RevisionId;
   readonly commitId?: DomainId;
-  readonly payload: Readonly<Record<string, unknown>>;
+  readonly payload: JsonPayload;
   readonly occurredAt: Date;
+}
+
+function assertJsonValue(value: unknown, path: string): asserts value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error(`Event payload must be JSON-compatible at ${path}`);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => assertJsonValue(entry, `${path}[${index}]`));
+    return;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype === Object.prototype || prototype === null) {
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      assertJsonValue(entry, `${path}.${key}`);
+    }
+    return;
+  }
+  throw new Error(`Event payload must be JSON-compatible at ${path}`);
+}
+
+export function assertJsonPayload(payload: Readonly<Record<string, unknown>>): asserts payload is JsonPayload {
+  for (const [key, value] of Object.entries(payload)) {
+    assertJsonValue(value, `payload.${key}`);
+  }
+}
+
+export function cloneJsonPayload(payload: Readonly<Record<string, unknown>>): JsonPayload {
+  assertJsonPayload(payload);
+  return JSON.parse(JSON.stringify(payload)) as JsonPayload;
 }
 
 export function createDomainEvent(input: {
@@ -2512,6 +2547,7 @@ export function createDomainEvent(input: {
   if (!input.novelId) throw new Error("novelId is required");
   if (!input.objectId) throw new Error("objectId is required");
   if (!input.revisionId) throw new Error("revisionId is required");
+  assertJsonPayload(input.payload);
   if (EVENT_CONTEXTS[input.name] !== input.context) {
     throw new Error(`Event ${input.name} cannot be produced by context ${input.context}`);
   }
@@ -2524,7 +2560,7 @@ export function createDomainEvent(input: {
     objectId: input.objectId,
     revisionId: input.revisionId,
     commitId: input.commitId,
-    payload: deepFreeze({ ...input.payload }),
+    payload: deepFreeze(cloneJsonPayload(input.payload)),
     occurredAt: input.occurredAt,
   });
 }
@@ -2533,16 +2569,7 @@ export function createDomainEvent(input: {
 ```ts
 import type { DomainEvent } from "../domain/domainEvent";
 import { deepFreeze } from "../../shared/domain/immutable";
-
-function cloneValue(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(cloneValue);
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value as Record<string, unknown>).map(([key, nested]) => [key, cloneValue(nested)]),
-    );
-  }
-  return value;
-}
+import { cloneJsonPayload } from "../domain/domainEvent";
 
 export interface EventStore {
   append(event: DomainEvent): Promise<void>;
@@ -2561,7 +2588,7 @@ export class InMemoryEventStore implements EventStore {
     this.events.push(
       deepFreeze({
         ...event,
-        payload: cloneValue(event.payload) as Record<string, unknown>,
+        payload: cloneJsonPayload(event.payload),
       }),
     );
   }
@@ -2576,7 +2603,7 @@ export class InMemoryEventStore implements EventStore {
 
 Run: `npm test -- --run tests/safety/events.test.ts`
 
-Expected: PASS with 7 event tests.
+Expected: PASS with 8 event tests.
 
 - [ ] **Step 5: Commit**
 

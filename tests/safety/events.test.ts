@@ -78,11 +78,30 @@ describe("domain events", () => {
       occurredAt: now,
     });
     const nested = (event.payload as { nested: { values: Array<{ id: string }> } }).nested;
+    expect(event.payload).toEqual({ nested: { values: [{ id: "one" }] } });
     expect(Object.isFrozen(event.payload)).toBe(true);
     expect(Object.isFrozen(nested)).toBe(true);
     expect(Object.isFrozen(nested.values)).toBe(true);
     expect(Object.isFrozen(nested.values[0])).toBe(true);
     expect(() => nested.values.push({ id: "two" })).toThrow();
+  });
+
+  it("rejects unsupported non-JSON payload values", () => {
+    class Example {}
+    for (const value of [new Date(), new Map(), /expression/, new Example()]) {
+      expect(() =>
+        createDomainEvent({
+          eventId: "event-invalid-payload",
+          name: "SceneCommitted",
+          context: "manuscript",
+          novelId: "novel-1",
+          objectId: "scene-1",
+          revisionId: "scene-rev-2",
+          payload: { value } as never,
+          occurredAt: now,
+        }),
+      ).toThrow("Event payload must be JSON-compatible at payload.value");
+    }
   });
 
   it("stores events append-only with strict ordering", async () => {
