@@ -67,15 +67,18 @@ Deferred to separate plans:
 package.json
 tsconfig.json
 vitest.config.ts
+.gitignore
 docker-compose.yml
 prisma/
   schema.prisma
+  migrations/
 src/
   shared/
     domain/
       ids.ts
       versioning.ts
       contentHash.ts
+      immutable.ts
     application/
       repository.ts
     infrastructure/
@@ -169,6 +172,7 @@ Each domain file owns one aggregate or value-object family. Application files or
 **Files:**
 
 - Create: `package.json`
+- Create: `.gitignore`
 - Create: `tsconfig.json`
 - Create: `vitest.config.ts`
 - Create: `src/shared/domain/ids.ts`
@@ -206,8 +210,8 @@ Each domain file owns one aggregate or value-object family. Application files or
 {
   "compilerOptions": {
     "target": "ES2022",
-    "module": "NodeNext",
-    "moduleResolution": "NodeNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": false,
@@ -619,6 +623,7 @@ Expected: FAIL because the CanonicalFact module does not exist.
 
 ```ts
 import type { DomainId, RevisionId } from "../../../shared/domain/ids";
+import { deepFreeze } from "../../../shared/domain/immutable";
 
 export type CanonicalFactType =
   | "character_profile"
@@ -667,7 +672,7 @@ export function createCanonicalFact(input: CreateCanonicalFactInput): CanonicalF
     id: input.id,
     novelId: input.novelId,
     type: input.type,
-    content: Object.freeze({ ...input.content }),
+    content: deepFreeze({ ...input.content }),
     currentRevisionId: input.revisionId,
     lastCommitId: input.commitId,
     createdAt: input.createdAt,
@@ -682,7 +687,7 @@ export function replaceCanonicalFact(input: ReplaceCanonicalFactInput): Canonica
 
   return Object.freeze({
     ...input.fact,
-    content: Object.freeze({ ...input.content }),
+    content: deepFreeze({ ...input.content }),
     currentRevisionId: input.revisionId,
     lastCommitId: input.commitId,
     updatedAt: input.updatedAt,
@@ -694,7 +699,7 @@ export function replaceCanonicalFact(input: ReplaceCanonicalFactInput): Canonica
 
 Run: `npm test -- --run tests/narrative/canonicalFact.test.ts`
 
-Expected: PASS with 3 CanonicalFact tests.
+Expected: PASS with 4 CanonicalFact tests.
 
 - [ ] **Step 5: Commit**
 
@@ -799,6 +804,7 @@ Expected: FAIL because the state record module does not exist.
 
 ```ts
 import type { DomainId, RevisionId } from "../../../shared/domain/ids";
+import { deepFreeze } from "../../../shared/domain/immutable";
 
 export type StateRecordType =
   | "character_state"
@@ -869,8 +875,8 @@ export function createStateRecord(input: CreateStateRecordInput): StateRecord {
     novelId: input.novelId,
     type: input.type,
     subjectId: input.subjectId,
-    position: Object.freeze({ ...input.position }),
-    content: Object.freeze({ ...input.content }),
+    position: deepFreeze({ ...input.position }),
+    content: deepFreeze({ ...input.content }),
     currentRevisionId: input.revisionId,
     lastCommitId: input.commitId,
     createdAt: input.createdAt,
@@ -885,7 +891,7 @@ export function replaceStateRecord(input: ReplaceStateRecordInput): StateRecord 
 
   return Object.freeze({
     ...input.record,
-    content: Object.freeze({ ...input.content }),
+    content: deepFreeze({ ...input.content }),
     currentRevisionId: input.revisionId,
     lastCommitId: input.commitId,
     updatedAt: input.updatedAt,
@@ -897,7 +903,7 @@ export function replaceStateRecord(input: ReplaceStateRecordInput): StateRecord 
 
 Run: `npm test -- --run tests/narrative/stateRecord.test.ts`
 
-Expected: PASS with 3 StateRecord tests.
+Expected: PASS with 4 StateRecord tests.
 
 - [ ] **Step 5: Commit**
 
@@ -909,6 +915,8 @@ git commit -m "feat: add position-aware state records"
 ---
 
 ### Task 5: Manuscript Aggregates and Target Span
+
+Target spans use `SceneSpanAnchor` metadata containing a stable anchor ID, scene-revision ID, start/end offsets, text, and source content hash. Resolution never searches by text, so duplicate text is safe when separate anchors carry distinct ranges. Local replacement rebases affected anchor offsets and binds the new anchors to the resulting scene revision.
 
 **Files:**
 
@@ -1169,6 +1177,36 @@ export interface Scene {
   readonly updatedAt: Date;
 }
 
+export interface SceneRevision {
+  readonly sceneId: DomainId;
+  readonly revisionId: RevisionId;
+  readonly text: string;
+  readonly spanAnchors: Readonly<Record<string, string>>;
+  readonly commitId: DomainId;
+}
+
+export function toSceneRevision(scene: Scene): SceneRevision {
+  return Object.freeze({
+    sceneId: scene.id,
+    revisionId: scene.currentRevisionId,
+    text: scene.text,
+    spanAnchors: scene.spanAnchors,
+    commitId: scene.lastCommitId,
+  });
+}
+
+function assertSpanAnchors(text: string, spanAnchors: Readonly<Record<string, string>>): void {
+  for (const [anchorId, anchoredText] of Object.entries(spanAnchors)) {
+    if (!anchorId.trim()) throw new Error("spanAnchors keys must not be empty");
+    if (!anchoredText) throw new Error(`Target span anchor text is empty: ${anchorId}`);
+    const start = text.indexOf(anchoredText);
+    if (start < 0) throw new Error(`Target span anchor text is not present in scene: ${anchorId}`);
+    if (text.indexOf(anchoredText, start + 1) >= 0) {
+      throw new Error(`Target span anchor text is ambiguous: ${anchorId}`);
+    }
+  }
+}
+
 export function createScene(input: {
   id: DomainId;
   novelId: DomainId;
@@ -1209,10 +1247,12 @@ export function commitSceneText(input: {
   if (!input.revisionId) throw new Error("revisionId is required");
   if (!input.commitId) throw new Error("commitId is required");
   if (input.updatedAt < input.scene.updatedAt) throw new Error("updatedAt cannot move backward");
+  const spanAnchors = input.spanAnchors ?? {};
+  assertSpanAnchors(input.text, spanAnchors);
   return Object.freeze({
     ...input.scene,
     text: input.text,
-    spanAnchors: Object.freeze({ ...(input.spanAnchors ?? input.scene.spanAnchors) }),
+    spanAnchors: Object.freeze({ ...spanAnchors }),
     currentRevisionId: input.revisionId,
     lastCommitId: input.commitId,
     updatedAt: input.updatedAt,
@@ -1250,6 +1290,9 @@ export function resolveTargetSpan(scene: Scene, span: TargetSpan): ResolvedSpan 
 
   const start = scene.text.indexOf(anchoredText);
   if (start < 0) throw new Error(`Target span is not present in scene: ${span.anchorId}`);
+  if (scene.text.indexOf(anchoredText, start + 1) >= 0) {
+    throw new Error(`Target span text is ambiguous: ${span.anchorId}`);
+  }
   return Object.freeze({ start, end: start + anchoredText.length, text: anchoredText });
 }
 
@@ -1267,7 +1310,7 @@ export function replaceTargetSpan(input: {
 
 Run: `npm test -- --run tests/manuscript/manuscript.test.ts`
 
-Expected: PASS with 4 manuscript tests.
+Expected: PASS with 6 manuscript tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1304,11 +1347,6 @@ import {
   startGenerationTask,
 } from "../../src/production/domain/generationTask";
 import { createVersionReference, createVersionSet } from "../../src/shared/domain/versioning";
-import type { Candidate } from "../../src/production/domain/candidate";
-import type { Scene } from "../../src/manuscript/domain/scene";
-import type { CanonicalFact } from "../../src/narrative/canon/domain/canonicalFact";
-import type { StateRecord } from "../../src/narrative/state/domain/stateRecord";
-import type { NarrativeCommit } from "../../src/safety/domain/narrativeCommit";
 
 const now = new Date("2026-10-02T00:00:00.000Z");
 const sceneVersion = createVersionReference("Scene", "scene-1", "scene-rev-1");
@@ -1317,7 +1355,7 @@ function task() {
   return createGenerationTask({
     id: "task-1",
     novelId: "novel-1",
-    operation: "scene_rewrite",
+    operation: "rewrite",
     targetSceneId: "scene-1",
     intent: "Rewrite the second paragraph with more tension.",
     basedOnVersionSet: createVersionSet({ scene: sceneVersion }),
@@ -1329,7 +1367,7 @@ describe("GenerationTask", () => {
   it("starts as draft with a precise based-on version set", () => {
     expect(task()).toMatchObject({
       status: "draft",
-      operation: "scene_rewrite",
+      operation: "rewrite",
       basedOnVersionSet: { scene: sceneVersion },
       candidateIds: [],
     });
@@ -1358,7 +1396,7 @@ describe("GenerationTask", () => {
     const stale = markGenerationTaskStale(running, new Date("2026-10-04T00:00:00.000Z"));
     expect(stale.status).toBe("stale");
     expect(() => startGenerationTask(stale, new Date("2026-10-05T00:00:00.000Z"))).toThrow(
-      "Only a draft task can start",
+      "Only a draft or ready task can start",
     );
     const cancelled = cancelGenerationTask(task(), new Date("2026-10-05T00:00:00.000Z"));
     expect(cancelled.status).toBe("cancelled");
@@ -1413,6 +1451,10 @@ export interface GenerationTask {
   readonly updatedAt: Date;
 }
 
+function isTerminalTaskStatus(status: GenerationTaskStatus): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled" || status === "stale" || status === "expired";
+}
+
 export function createGenerationTask(input: {
   id: DomainId;
   novelId: DomainId;
@@ -1426,6 +1468,15 @@ export function createGenerationTask(input: {
   if (!input.novelId) throw new Error("novelId is required");
   if (!input.targetSceneId) throw new Error("targetSceneId is required");
   if (!input.intent.trim()) throw new Error("intent is required");
+  if (Object.keys(input.basedOnVersionSet).length === 0) {
+    throw new Error("basedOnVersionSet must contain the target scene version");
+  }
+  const hasTargetVersion = Object.values(input.basedOnVersionSet).some(
+    reference => reference.aggregateType === "Scene" && reference.objectId === input.targetSceneId,
+  );
+  if (!hasTargetVersion) {
+    throw new Error("basedOnVersionSet must include the target scene version");
+  }
 
   return Object.freeze({
     id: input.id,
@@ -1442,13 +1493,14 @@ export function createGenerationTask(input: {
 }
 
 export function startGenerationTask(task: GenerationTask, updatedAt: Date): GenerationTask {
-  if (task.status !== "draft" && task.status !== "ready") throw new Error("Only a draft task can start");
+  if (task.status !== "draft" && task.status !== "ready") throw new Error("Only a draft or ready task can start");
   if (updatedAt < task.updatedAt) throw new Error("updatedAt cannot move backward");
   return Object.freeze({ ...task, status: "running", updatedAt });
 }
 
 export function addCandidateReference(task: GenerationTask, candidateId: DomainId): GenerationTask {
   if (!candidateId) throw new Error("candidateId is required");
+  if (isTerminalTaskStatus(task.status)) throw new Error("Terminal task cannot add candidates");
   if (task.candidateIds.includes(candidateId)) return task;
   return Object.freeze({
     ...task,
@@ -1465,6 +1517,11 @@ export function completeGenerationTask(input: {
     throw new Error("GenerationTask requires at least one candidate to complete");
   }
   if (input.task.status !== "running") throw new Error("Only a running task can complete");
+  for (const candidateId of input.candidateIds) {
+    if (!input.task.candidateIds.includes(candidateId)) {
+      throw new Error(`Candidate reference is not associated with task: ${candidateId}`);
+    }
+  }
   if (input.updatedAt < input.task.updatedAt) throw new Error("updatedAt cannot move backward");
   return Object.freeze({
     ...input.task,
@@ -1475,11 +1532,14 @@ export function completeGenerationTask(input: {
 }
 
 export function cancelGenerationTask(task: GenerationTask, updatedAt: Date): GenerationTask {
-  if (task.status === "completed") throw new Error("A completed task cannot be cancelled");
+  if (isTerminalTaskStatus(task.status)) throw new Error("Only a draft, ready, or running task can be cancelled");
+  if (updatedAt < task.updatedAt) throw new Error("updatedAt cannot move backward");
   return Object.freeze({ ...task, status: "cancelled", updatedAt });
 }
 
 export function markGenerationTaskStale(task: GenerationTask, updatedAt: Date): GenerationTask {
+  if (isTerminalTaskStatus(task.status)) throw new Error("Only a draft, ready, or running task can become stale");
+  if (updatedAt < task.updatedAt) throw new Error("updatedAt cannot move backward");
   return Object.freeze({ ...task, status: "stale", updatedAt });
 }
 ```
@@ -1488,7 +1548,7 @@ export function markGenerationTaskStale(task: GenerationTask, updatedAt: Date): 
 
 Run: `npm test -- --run tests/production/generationTask.test.ts`
 
-Expected: PASS with 4 GenerationTask tests.
+Expected: PASS with 6 GenerationTask tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1559,6 +1619,7 @@ describe("Candidate", () => {
     });
     expect(original.currentRevisionId).toBe("candidate-1-rev-1");
     expect(edited.currentRevisionId).toBe("candidate-rev-2");
+    if (edited.change.type !== "text") throw new Error("Expected a text candidate");
     expect(edited.change.text).toBe("Edited text");
   });
 
@@ -1566,7 +1627,7 @@ describe("Candidate", () => {
     const original = markCandidateValidated(candidate(), new Date("2026-10-03T00:00:00.000Z"));
     const selected = selectCandidate(original, new Date("2026-10-03T00:00:00.000Z"));
     expect(selected.status).toBe("selected");
-    expect(() => rejectCandidate(selected, "Not preferred")).toThrow("A selected candidate cannot be rejected");
+    expect(() => rejectCandidate(selected, "Not preferred")).toThrow("Terminal candidate cannot be rejected");
 
     const rejected = rejectCandidate(candidate(), "Not preferred");
     expect(rejected.status).toBe("rejected");
@@ -1601,7 +1662,7 @@ export type CandidateStatus =
   | "outdated"
   | "archived";
 
-export type CandidateChange =
+export type CandidateAtomicChange =
   | { readonly type: "text"; readonly sceneId: DomainId; readonly text: string }
   | {
       readonly type: "structured_state";
@@ -1620,6 +1681,13 @@ export type CandidateChange =
       readonly replacement: string;
     };
 
+export interface CompositeCandidateChange {
+  readonly type: "composite";
+  readonly changes: readonly CandidateAtomicChange[];
+}
+
+export type CandidateChange = CandidateAtomicChange | CompositeCandidateChange;
+
 export interface Candidate {
   readonly id: DomainId;
   readonly taskId: DomainId;
@@ -1633,6 +1701,10 @@ export interface Candidate {
   readonly updatedAt: Date;
 }
 
+function isTerminalCandidateStatus(status: CandidateStatus): boolean {
+  return status === "selected" || status === "rejected" || status === "outdated" || status === "archived";
+}
+
 export function createCandidate(input: {
   id: DomainId;
   taskId: DomainId;
@@ -1644,6 +1716,12 @@ export function createCandidate(input: {
   if (!input.id) throw new Error("id is required");
   if (!input.taskId) throw new Error("taskId is required");
   if (!input.novelId) throw new Error("novelId is required");
+  if (Object.keys(input.basedOnVersionSet).length === 0) {
+    throw new Error("basedOnVersionSet must contain at least one dependency");
+  }
+  if (input.change.type === "composite" && input.change.changes.length === 0) {
+    throw new Error("composite change requires at least one atomic change");
+  }
 
   return Object.freeze({
     id: input.id,
@@ -1665,6 +1743,9 @@ export function editCandidate(input: {
   updatedAt: Date;
 }): Candidate {
   if (!input.revisionId) throw new Error("revisionId is required");
+  if (isTerminalCandidateStatus(input.candidate.status)) {
+    throw new Error("Terminal candidate cannot be edited");
+  }
   if (input.updatedAt < input.candidate.updatedAt) throw new Error("updatedAt cannot move backward");
   return Object.freeze({
     ...input.candidate,
@@ -1682,6 +1763,9 @@ export function selectCandidate(candidate: Candidate, updatedAt: Date): Candidat
 }
 
 export function markCandidateValidated(candidate: Candidate, updatedAt: Date): Candidate {
+  if (isTerminalCandidateStatus(candidate.status)) {
+    throw new Error("Terminal candidate cannot become validated");
+  }
   if (candidate.status !== "generated" && candidate.status !== "validating") {
     throw new Error("Only a generated or validating candidate can become validated");
   }
@@ -1689,12 +1773,15 @@ export function markCandidateValidated(candidate: Candidate, updatedAt: Date): C
 }
 
 export function rejectCandidate(candidate: Candidate, reason: string): Candidate {
-  if (candidate.status === "selected") throw new Error("A selected candidate cannot be rejected");
+  if (isTerminalCandidateStatus(candidate.status)) throw new Error("Terminal candidate cannot be rejected");
   if (!reason.trim()) throw new Error("rejection reason is required");
   return Object.freeze({ ...candidate, status: "rejected", rejectionReason: reason.trim() });
 }
 
 export function markCandidateOutdated(candidate: Candidate, updatedAt: Date): Candidate {
+  if (isTerminalCandidateStatus(candidate.status)) {
+    throw new Error("Terminal candidate cannot become outdated");
+  }
   return Object.freeze({ ...candidate, status: "outdated", updatedAt });
 }
 ```
@@ -1703,7 +1790,7 @@ export function markCandidateOutdated(candidate: Candidate, updatedAt: Date): Ca
 
 Run: `npm test -- --run tests/production/candidate.test.ts`
 
-Expected: PASS with 3 Candidate tests.
+Expected: PASS with 6 Candidate tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1782,9 +1869,9 @@ describe("ValidationRun", () => {
   });
 
   it("summarizes the most severe outcome", () => {
-    expect(summarizeValidationOutcome([run("pass"), run("pass")])).toBe("pass");
-    expect(summarizeValidationOutcome([run("pass"), run("needs_review")])).toBe("needs_review");
-    expect(summarizeValidationOutcome([run("needs_review"), run("fail")])).toBe("fail");
+    expect(summarizeValidationOutcome(["pass", "pass"])).toBe("pass");
+    expect(summarizeValidationOutcome(["pass", "needs_review"])).toBe("needs_review");
+    expect(summarizeValidationOutcome(["needs_review", "fail"])).toBe("fail");
   });
 });
 ```
@@ -2276,6 +2363,8 @@ git commit -m "feat: add narrative commit process aggregate"
 
 ### Task 11: Context-Owned Domain Events
 
+Producing contexts provide named event factories for manuscript, narrative-state, AI-production, and memory contracts. State Safety retains only the generic JSON event envelope and persistence/recovery infrastructure. Event stores support atomic batch append, which commit and rollback use for multi-event evidence.
+
 **Files:**
 
 - Create: `src/safety/domain/domainEvent.ts`
@@ -2375,6 +2464,12 @@ Expected: FAIL because the event modules do not exist.
 ```ts
 import type { DomainId, RevisionId } from "../../shared/domain/ids";
 
+import { deepFreeze } from "../../shared/domain/immutable";
+
+export type JsonPrimitive = string | number | boolean | null;
+export type JsonValue = JsonPrimitive | JsonValue[] | { readonly [key: string]: JsonValue };
+export type JsonPayload = Readonly<Record<string, JsonValue>>;
+
 export type DomainEventName =
   | "NovelCreated"
   | "SceneCommitted"
@@ -2395,6 +2490,20 @@ export type ProducingContext =
   | "memory"
   | "platform";
 
+const EVENT_CONTEXTS: Readonly<Record<DomainEventName, ProducingContext>> = {
+  NovelCreated: "narrative_state",
+  SceneCommitted: "manuscript",
+  CanonicalFactChanged: "narrative_state",
+  CharacterStateChanged: "narrative_state",
+  WorldStateChanged: "narrative_state",
+  PlotStateChanged: "narrative_state",
+  CandidateCreated: "ai_production",
+  ValidationCompleted: "ai_production",
+  ReviewDecisionRecorded: "ai_production",
+  NarrativeCommitRecorded: "ai_production",
+  MemoryProjectionRebuilt: "memory",
+};
+
 export interface DomainEvent {
   readonly eventId: DomainId;
   readonly name: DomainEventName;
@@ -2403,8 +2512,39 @@ export interface DomainEvent {
   readonly objectId: DomainId;
   readonly revisionId: RevisionId;
   readonly commitId?: DomainId;
-  readonly payload: Readonly<Record<string, unknown>>;
+  readonly payload: JsonPayload;
   readonly occurredAt: Date;
+}
+
+function assertJsonValue(value: unknown, path: string): asserts value is JsonValue {
+  if (value === null || typeof value === "string" || typeof value === "boolean") return;
+  if (typeof value === "number") {
+    if (!Number.isFinite(value)) throw new Error(`Event payload must be JSON-compatible at ${path}`);
+    return;
+  }
+  if (Array.isArray(value)) {
+    value.forEach((entry, index) => assertJsonValue(entry, `${path}[${index}]`));
+    return;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype === Object.prototype || prototype === null) {
+    for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
+      assertJsonValue(entry, `${path}.${key}`);
+    }
+    return;
+  }
+  throw new Error(`Event payload must be JSON-compatible at ${path}`);
+}
+
+export function assertJsonPayload(payload: Readonly<Record<string, unknown>>): asserts payload is JsonPayload {
+  for (const [key, value] of Object.entries(payload)) {
+    assertJsonValue(value, `payload.${key}`);
+  }
+}
+
+export function cloneJsonPayload(payload: Readonly<Record<string, unknown>>): JsonPayload {
+  assertJsonPayload(payload);
+  return JSON.parse(JSON.stringify(payload)) as JsonPayload;
 }
 
 export function createDomainEvent(input: {
@@ -2422,6 +2562,10 @@ export function createDomainEvent(input: {
   if (!input.novelId) throw new Error("novelId is required");
   if (!input.objectId) throw new Error("objectId is required");
   if (!input.revisionId) throw new Error("revisionId is required");
+  assertJsonPayload(input.payload);
+  if (EVENT_CONTEXTS[input.name] !== input.context) {
+    throw new Error(`Event ${input.name} cannot be produced by context ${input.context}`);
+  }
 
   return Object.freeze({
     eventId: input.eventId,
@@ -2431,7 +2575,7 @@ export function createDomainEvent(input: {
     objectId: input.objectId,
     revisionId: input.revisionId,
     commitId: input.commitId,
-    payload: Object.freeze({ ...input.payload }),
+    payload: deepFreeze(cloneJsonPayload(input.payload)),
     occurredAt: input.occurredAt,
   });
 }
@@ -2439,6 +2583,8 @@ export function createDomainEvent(input: {
 
 ```ts
 import type { DomainEvent } from "../domain/domainEvent";
+import { deepFreeze } from "../../shared/domain/immutable";
+import { cloneJsonPayload } from "../domain/domainEvent";
 
 export interface EventStore {
   append(event: DomainEvent): Promise<void>;
@@ -2454,7 +2600,12 @@ export class InMemoryEventStore implements EventStore {
       throw new Error(`Duplicate event id: ${event.eventId}`);
     }
     this.eventIds.add(event.eventId);
-    this.events.push(event);
+    this.events.push(
+      deepFreeze({
+        ...event,
+        payload: cloneJsonPayload(event.payload),
+      }),
+    );
   }
 
   async listByNovel(novelId: string): Promise<readonly DomainEvent[]> {
@@ -2467,7 +2618,7 @@ export class InMemoryEventStore implements EventStore {
 
 Run: `npm test -- --run tests/safety/events.test.ts`
 
-Expected: PASS with 3 event tests.
+Expected: PASS with 9 event tests.
 
 - [ ] **Step 5: Commit**
 
@@ -2571,6 +2722,7 @@ export interface Identified {
   readonly novelId?: string;
 }
 
+/** A missing novelId means the object itself is the novel identity. */
 export interface Repository<T extends Identified> {
   save(entity: T): Promise<void>;
   findById(id: string): Promise<T | undefined>;
@@ -2588,22 +2740,44 @@ export interface RevisionedRepository<T extends Revisioned<T>> extends Repositor
 
 ```ts
 import type { Repository, Revisioned, RevisionedRepository } from "../shared/application/repository";
+import { deepFreeze } from "../shared/domain/immutable";
+
+function cloneValue<T>(value: T): T {
+  if (value instanceof Date) return new Date(value.getTime()) as T;
+  if (Array.isArray(value)) return value.map(cloneValue) as T;
+  if (value !== null && typeof value === "object") {
+    const clone = Object.create(Object.getPrototypeOf(value)) as Record<string, unknown>;
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      clone[key] = cloneValue(nested);
+    }
+    return clone as T;
+  }
+  return value;
+}
+
+function snapshot<T>(value: T): T {
+  return deepFreeze(cloneValue(value));
+}
+
+function hasSameValue(left: unknown, right: unknown): boolean {
+  return JSON.stringify(left) === JSON.stringify(right);
+}
 
 export class InMemoryRepository<T extends { id: string; novelId?: string }> implements Repository<T> {
   private readonly entities = new Map<string, T>();
 
   async save(entity: T): Promise<void> {
-    this.entities.set(entity.id, Object.freeze({ ...entity }));
+    this.entities.set(entity.id, snapshot(entity));
   }
 
   async findById(id: string): Promise<T | undefined> {
     const entity = this.entities.get(id);
-    return entity ? Object.freeze({ ...entity }) : undefined;
+    return entity ? snapshot(entity) : undefined;
   }
 
   async listByNovel(novelId: string): Promise<readonly T[]> {
     return Object.freeze(
-      [...this.entities.values()].filter((entity) => entity.novelId === novelId).map((entity) => Object.freeze({ ...entity })),
+      [...this.entities.values()].filter((entity) => (entity.novelId ?? entity.id) === novelId).map((entity) => snapshot(entity)),
     );
   }
 }
@@ -2615,26 +2789,34 @@ export class InMemoryRevisionedRepository<T extends Revisioned<T>>
   private readonly revisions = new Map<string, T>();
 
   async save(entity: T): Promise<void> {
-    const frozen = Object.freeze({ ...entity });
+    const frozen = snapshot(entity);
+    const revisionKey = `${entity.id}:${entity.currentRevisionId}`;
+    const existing = this.revisions.get(revisionKey);
+    if (existing) {
+      if (!hasSameValue(existing, frozen)) {
+        throw new Error(`Revision already exists: ${revisionKey}`);
+      }
+    } else {
+      this.revisions.set(revisionKey, frozen);
+    }
     this.currentEntities.set(entity.id, frozen);
-    this.revisions.set(`${entity.id}:${entity.currentRevisionId}`, frozen);
   }
 
   async findById(id: string): Promise<T | undefined> {
     const entity = this.currentEntities.get(id);
-    return entity ? Object.freeze({ ...entity }) : undefined;
+    return entity ? snapshot(entity) : undefined;
   }
 
   async getRevision(id: string, revisionId: string): Promise<T | undefined> {
     const entity = this.revisions.get(`${id}:${revisionId}`);
-    return entity ? Object.freeze({ ...entity }) : undefined;
+    return entity ? snapshot(entity) : undefined;
   }
 
   async listByNovel(novelId: string): Promise<readonly T[]> {
     return Object.freeze(
       [...this.currentEntities.values()]
         .filter((entity) => entity.novelId === novelId)
-        .map((entity) => Object.freeze({ ...entity })),
+        .map((entity) => snapshot(entity)),
     );
   }
 }
@@ -2644,7 +2826,7 @@ export class InMemoryRevisionedRepository<T extends Revisioned<T>>
 
 Run: `npm test -- --run tests/app/repositories.test.ts`
 
-Expected: PASS with 3 repository tests.
+Expected: PASS with 6 repository tests.
 
 - [ ] **Step 5: Commit**
 
@@ -2684,7 +2866,7 @@ describe("runtime abstraction", () => {
     const task = createGenerationTask({
       id: "task-1",
       novelId: "novel-1",
-      operation: "scene_rewrite",
+      operation: "rewrite",
       targetSceneId: "scene-1",
       intent: "Rewrite with more tension.",
       basedOnVersionSet: createVersionSet({
@@ -2698,6 +2880,7 @@ describe("runtime abstraction", () => {
       taskId: "task-1",
       agentRole: "writer",
       modelPolicy: { provider: "test", model: "deterministic", maxOutputTokens: 1000 },
+      basedOnVersionSet: task.basedOnVersionSet,
       context: { taskIntent: task.intent },
       requestedChange: { type: "text", sceneId: "scene-1", text: "Deterministic result" },
     });
@@ -2715,6 +2898,9 @@ describe("runtime abstraction", () => {
         taskId: "task-1",
         agentRole: "writer",
         modelPolicy: { provider: "test", model: "deterministic", maxOutputTokens: 1000 },
+        basedOnVersionSet: createVersionSet({
+          scene: createVersionReference("Scene", "scene-1", "scene-rev-1"),
+        }),
         context: {},
         requestedChange: { type: "text", sceneId: "scene-1", text: "Result" },
       }),
@@ -2748,6 +2934,7 @@ export interface RuntimeRequest {
   readonly taskId: string;
   readonly agentRole: AgentRole;
   readonly modelPolicy: ModelPolicy;
+  readonly basedOnVersionSet: VersionSet;
   readonly context: Readonly<Record<string, unknown>>;
   readonly requestedChange: CandidateChange;
 }
@@ -2766,22 +2953,76 @@ export interface RuntimeAdapter {
 ```
 
 ```ts
+import { createVersionSet } from "../../shared/domain/versioning";
+import { deepFreeze } from "../../shared/domain/immutable";
 import type { RuntimeAdapter, RuntimeRequest, RuntimeResult } from "./runtimeAdapter";
+
+const AGENT_ROLES = new Set([
+  "planner",
+  "writer",
+  "editor",
+  "reviewer",
+  "consistency_agent",
+  "memory_agent",
+]);
+
+function cloneValue<T>(value: T): T {
+  if (Array.isArray(value)) return value.map(cloneValue) as T;
+  if (value !== null && typeof value === "object") {
+    const clone = Object.create(Object.getPrototypeOf(value)) as Record<string, unknown>;
+    for (const [key, nested] of Object.entries(value as Record<string, unknown>)) {
+      clone[key] = cloneValue(nested);
+    }
+    return clone as T;
+  }
+  return value;
+}
+
+function assertRequestedChange(change: RuntimeRequest["requestedChange"]): void {
+  if (change.type === "composite") {
+    if (change.changes.length === 0) throw new Error("composite change requires at least one atomic change");
+    for (const atomicChange of change.changes) assertRequestedChange(atomicChange);
+    return;
+  }
+  if (change.type === "text") {
+    if (!change.sceneId || !change.text) throw new Error("text change requires sceneId and text");
+    return;
+  }
+  if (change.type === "structured_state") {
+    if (!change.stateRecordId || Object.keys(change.content).length === 0) {
+      throw new Error("structured_state change requires stateRecordId and content");
+    }
+    return;
+  }
+  if (change.type === "canonical_fact") {
+    if (!change.canonicalFactId || Object.keys(change.content).length === 0) {
+      throw new Error("canonical_fact change requires canonicalFactId and content");
+    }
+    return;
+  }
+  if (!change.sceneId || !change.targetSpan.anchorId || !change.targetSpan.text || !change.targetSpan.sourceContentHash || !change.replacement) {
+    throw new Error("local_text change requires sceneId, targetSpan, and replacement");
+  }
+}
 
 export class DeterministicRuntime implements RuntimeAdapter {
   async execute(request: RuntimeRequest): Promise<RuntimeResult> {
     if (!request.taskId) throw new Error("taskId is required");
+    if (!request.modelPolicy.provider.trim()) throw new Error("provider is required");
+    if (!request.modelPolicy.model.trim()) throw new Error("model is required");
+    if (!AGENT_ROLES.has(request.agentRole)) throw new Error("agentRole is invalid");
     if (request.modelPolicy.maxOutputTokens <= 0) {
       throw new Error("maxOutputTokens must be positive");
     }
+    assertRequestedChange(request.requestedChange);
 
-    return {
+    return Object.freeze({
       taskId: request.taskId,
       agentRole: request.agentRole,
-      modelPolicy: request.modelPolicy,
-      change: request.requestedChange,
-      basedOnVersionSet: {},
-    };
+      modelPolicy: Object.freeze({ ...request.modelPolicy }),
+      change: deepFreeze(cloneValue(request.requestedChange)),
+      basedOnVersionSet: createVersionSet({ ...request.basedOnVersionSet }),
+    });
   }
 }
 ```
@@ -2790,7 +3031,7 @@ export class DeterministicRuntime implements RuntimeAdapter {
 
 Run: `npm test -- --run tests/production/runtimeAdapter.test.ts`
 
-Expected: PASS with 2 runtime tests.
+Expected: PASS with 6 runtime tests.
 
 - [ ] **Step 5: Commit**
 
@@ -3024,6 +3265,8 @@ Expected: FAIL because `commitCandidate` does not exist.
 
 - [ ] **Step 3: Implement the commit application service**
 
+The service must flatten a composite candidate into atomic changes, preflight every target and version dependency before mutation, prepare all resulting revisions and events, and apply them as one NarrativeCommit. Any missing object, repository failure, unsupported dependency, or event persistence failure must leave a failed NarrativeCommit record. If event persistence fails after canonical writes, restore the prepared original snapshots through the repositories on a best-effort basis.
+
 ```ts
 import type { RevisionedRepository, Repository } from "../../shared/application/repository";
 import type { Candidate } from "../../production/domain/candidate";
@@ -3227,7 +3470,7 @@ export async function commitCandidate(input: {
 
 Run: `npm test -- --run tests/app/coCreationLoop.test.ts`
 
-Expected: PASS with 2 commit service tests.
+Expected: PASS with 10 commit service tests.
 
 - [ ] **Step 5: Commit**
 
@@ -3239,6 +3482,8 @@ git commit -m "feat: add narrative commit application service"
 ---
 
 ### Task 15: Memory Projection and Context Assembly
+
+`SceneMemory` stores bounded deterministic summary text plus source length and source hash. `MemoryProjection.sourceRevisionSet` binds scene, canonical-fact, and state-record revisions using aggregate-qualified keys so staleness checks cover every dependency used to derive memory.
 
 **Files:**
 
@@ -3361,7 +3606,7 @@ describe("memory and context", () => {
     expect(context.sceneText).toBe(scene.text);
     expect(context.canonicalFacts).toEqual([relevantFact]);
     expect(context.stateRecords).toEqual([relevantState]);
-    expect(context.memory.sceneSummaries).toEqual(memory.scenes);
+    expect(context.memory.scenes).toEqual(memory.scenes);
     expect(context.taskIntent).toBe("Continue the scene.");
   });
 });
@@ -3379,6 +3624,7 @@ Expected: FAIL because the memory modules do not exist.
 import type { Scene } from "../../manuscript/domain/scene";
 import type { DomainEvent } from "../../safety/domain/domainEvent";
 import type { VersionSet } from "../../shared/domain/versioning";
+import { deepFreeze } from "../../shared/domain/immutable";
 
 export interface SceneMemory {
   readonly revisionId: string;
@@ -3406,22 +3652,23 @@ export function rebuildMemoryProjection(
   const committedSceneIds = new Set(
     events
       .filter((event) => event.name === "SceneCommitted" && event.context === "manuscript")
+      .filter((event) => scenes.some((scene) => scene.id === event.objectId && scene.currentRevisionId === event.revisionId))
       .map((event) => event.objectId),
   );
 
   for (const scene of scenes) {
     sourceRevisionSet[scene.id] = scene.currentRevisionId;
     if (committedSceneIds.size > 0 && !committedSceneIds.has(scene.id)) continue;
-    sceneMemories[scene.id] = Object.freeze({
+    sceneMemories[scene.id] = {
       revisionId: scene.currentRevisionId,
       summary: scene.text,
-    });
+    };
   }
 
-  return Object.freeze({
+  return deepFreeze({
     novelId,
-    sourceRevisionSet: Object.freeze(sourceRevisionSet),
-    scenes: Object.freeze(sceneMemories),
+    sourceRevisionSet,
+    scenes: sceneMemories,
   });
 }
 
@@ -3429,9 +3676,11 @@ export function isMemoryProjectionStale(
   projection: MemoryProjection,
   versionSet: VersionSet,
 ): boolean {
-  return Object.entries(versionSet).some(([name, reference]) => {
-    const projectedRevisionId = projection.sourceRevisionSet[reference.objectId];
-    return name === "scene" && projectedRevisionId !== reference.revisionId;
+  return Object.values(versionSet).some(reference => {
+    return (
+      reference.aggregateType === "Scene" &&
+      projection.sourceRevisionSet[reference.objectId] !== reference.revisionId
+    );
   });
 }
 ```
@@ -3449,6 +3698,11 @@ export interface GenerationContext {
   readonly stateRecords: readonly StateRecord[];
   readonly memory: MemoryProjection;
   readonly taskIntent: string;
+  readonly maxCharacters: number;
+  readonly selectedCharacterCount: number;
+  readonly overflowed: boolean;
+  readonly omittedFactIds: readonly string[];
+  readonly omittedStateIds: readonly string[];
 }
 
 export function assembleContext(input: {
@@ -3459,6 +3713,7 @@ export function assembleContext(input: {
   requiredFactIds: readonly string[];
   requiredStateIds: readonly string[];
   taskIntent: string;
+  maxCharacters: number;
 }): GenerationContext {
   if (!input.taskIntent.trim()) throw new Error("taskIntent is required");
   if (input.memory.novelId !== input.scene.novelId) {
@@ -3490,15 +3745,22 @@ export function assembleContext(input: {
     stateRecords: Object.freeze([...stateRecords]),
     memory: input.memory,
     taskIntent: input.taskIntent.trim(),
+    maxCharacters: input.maxCharacters,
+    selectedCharacterCount: 0,
+    overflowed: false,
+    omittedFactIds: [],
+    omittedStateIds: [],
   });
 }
 ```
+
+The implementation additionally applies deterministic ranking and a character budget. It scopes facts to the scene novel, scopes state records to the scene position, truncates lower-ranked entries when necessary, and exposes selected size, overflow, and omitted IDs.
 
 - [ ] **Step 4: Run the tests and verify they pass**
 
 Run: `npm test -- --run tests/memory/contextAssembly.test.ts`
 
-Expected: PASS with 3 memory/context tests.
+Expected: PASS with 9 memory/context tests.
 
 - [ ] **Step 5: Commit**
 
@@ -3631,6 +3893,7 @@ Expected: FAIL because the validator module does not exist.
 
 ```ts
 import type { Candidate } from "../domain/candidate";
+import type { CandidateAtomicChange } from "../domain/candidate";
 import type { Scene } from "../../manuscript/domain/scene";
 import { resolveTargetSpan } from "../../manuscript/domain/targetSpan";
 import {
@@ -3651,6 +3914,8 @@ export interface ValidationResult {
   readonly run: ReturnType<typeof createValidationRun>;
   readonly outcome: ValidationOutcome;
 }
+
+The implementation validates each atomic change recursively for composite candidates, rejects duplicate targets, empty structured target IDs, scene mismatches, and empty structured changes, distinguishes target-span errors, and checks `mustPreserve` against the resulting scene text after applying local or composite changes.
 
 export function validateCandidate(request: ValidationRequest): ValidationResult {
   const findings: ValidationFinding[] = [];
@@ -3737,7 +4002,7 @@ export function validateCandidate(request: ValidationRequest): ValidationResult 
 
 Run: `npm test -- --run tests/production/basicValidator.test.ts`
 
-Expected: PASS with 3 validator tests.
+Expected: PASS with 9 validator tests.
 
 - [ ] **Step 5: Commit**
 
@@ -3749,6 +4014,8 @@ git commit -m "feat: add basic candidate validator"
 ---
 
 ### Task 17: Core Engine HTTP API
+
+Scene and generation-task creation verifies that the target novel exists and that `x-author-id` matches the novel author before creating child objects; target scenes must also belong to that novel.
 
 **Files:**
 
@@ -3830,7 +4097,7 @@ describe("core engine API", () => {
       url: "/novels/novel-1/generation-tasks",
       payload: {
         id: "task-1",
-        operation: "scene_rewrite",
+        operation: "rewrite",
         targetSceneId: "scene-1",
         intent: "Rewrite with more tension.",
         basedOnVersionSet: {
@@ -3966,6 +4233,7 @@ const versionSetSchema = z.custom<VersionSet>(
     typeof value === "object" &&
     value !== null &&
     !Array.isArray(value) &&
+    Object.keys(value).length > 0 &&
     Object.values(value as Record<string, unknown>).every(
       entry => versionReferenceSchema.safeParse(entry).success,
     ),
@@ -3980,7 +4248,7 @@ const freeFormRecordSchema = z.custom<Record<string, unknown>>(
   value => typeof value === "object" && value !== null && !Array.isArray(value),
   { message: "Expected an object" },
 );
-const candidateChangeSchema = z.discriminatedUnion("type", [
+const atomicCandidateChangeSchema = z.discriminatedUnion("type", [
   z.object({ type: z.literal("text"), sceneId: z.string().min(1), text: z.string().min(1) }),
   z.object({
     type: z.literal("structured_state"),
@@ -4001,6 +4269,13 @@ const candidateChangeSchema = z.discriminatedUnion("type", [
       sourceContentHash: z.string().min(1),
     }),
     replacement: z.string().min(1),
+  }),
+]);
+const candidateChangeSchema = z.union([
+  atomicCandidateChangeSchema,
+  z.object({
+    type: z.literal("composite"),
+    changes: z.array(atomicCandidateChangeSchema).min(1),
   }),
 ]);
 
@@ -4090,6 +4365,7 @@ export function registerNovelBrainRoutes(app: FastifyInstance, dependencies: Api
       taskId: task.id,
       agentRole: body.agentRole,
       modelPolicy: body.modelPolicy,
+      basedOnVersionSet: task.basedOnVersionSet,
       context: { taskIntent: task.intent },
       requestedChange: body.change,
     });
@@ -4120,58 +4396,76 @@ export function registerNovelBrainRoutes(app: FastifyInstance, dependencies: Api
       .parse(request.body);
     const candidate = await dependencies.candidates.findById(params.candidateId);
     if (!candidate) return reply.code(404).send({ error: "Not Found" });
-    const scene = await dependencies.scenes.findById(
-      candidate.change.type === "text" || candidate.change.type === "local_text"
-        ? candidate.change.sceneId
-        : taskSceneId(candidate),
-    );
-    if (!scene) return reply.code(409).send({ error: "Target scene not found" });
+    const scene = hasSceneChange(candidate.change)
+      ? await dependencies.scenes.findById(taskSceneId(candidate))
+      : undefined;
+    if (hasSceneChange(candidate.change) && !scene) {
+      return reply.code(409).send({ error: "Target scene not found" });
+    }
 
-    const validation = validateCandidate({
+    const preValidation = validateCandidate({
       validationId: body.validationId,
       candidate,
       scene,
       mustPreserve: body.mustPreserve,
       createdAt: new Date(),
     });
-    if (validation.outcome === "fail") return reply.code(422).send(validation.run);
+    if (preValidation.outcome === "fail") return reply.code(422).send(preValidation.run);
+
+    const selectedCandidate = selectCandidate(
+      markCandidateValidated(candidate, new Date()),
+      new Date(),
+    );
+    await dependencies.candidates.save(selectedCandidate);
+    const validationRun = createValidationRun({
+      id: preValidation.run.id,
+      candidateId: selectedCandidate.id,
+      candidateRevisionId: selectedCandidate.currentRevisionId,
+      validatorId: preValidation.run.validatorId,
+      outcome: preValidation.run.outcome,
+      findings: preValidation.run.findings,
+      createdAt: preValidation.run.createdAt,
+    });
 
     const reviewDecision = createReviewDecision({
       id: body.reviewId,
-      candidateId: candidate.id,
-      candidateRevisionId: candidate.currentRevisionId,
+      candidateId: selectedCandidate.id,
+      candidateRevisionId: selectedCandidate.currentRevisionId,
       decision: "approve",
       decidedBy: "human",
       actorId: body.actorId,
       reason: "",
       createdAt: new Date(),
     });
-    await dependencies.validationRuns.save(validation.run);
+    await dependencies.validationRuns.save(validationRun);
     await dependencies.reviewDecisions.save(reviewDecision);
-    const selectedCandidate = selectCandidate(
-      markCandidateValidated(candidate, new Date()),
-      new Date(),
-    );
-    await dependencies.candidates.save(selectedCandidate);
-
-    const commit = await commitCandidate({
-      repositories: {
-        scenes: dependencies.scenes,
-        candidates: dependencies.candidates,
-        canonicalFacts: dependencies.canonicalFacts,
-        stateRecords: dependencies.stateRecords,
-        narrativeCommits: dependencies.narrativeCommits,
-      },
-      eventStore: dependencies.eventStore,
-      input: {
-        commitId: body.commitId,
-        candidateId: selectedCandidate.id,
-        validationRuns: [validation.run],
-        reviewDecision,
-        now: new Date(),
-      },
-    });
-    return reply.code(201).send(commit);
+    try {
+      const commit = await commitCandidate({
+        repositories: {
+          scenes: dependencies.scenes,
+          candidates: dependencies.candidates,
+          canonicalFacts: dependencies.canonicalFacts,
+          stateRecords: dependencies.stateRecords,
+          narrativeCommits: dependencies.narrativeCommits,
+        },
+        eventStore: dependencies.eventStore,
+        input: {
+          commitId: body.commitId,
+          candidateId: selectedCandidate.id,
+          validationRuns: [validationRun],
+          reviewDecision,
+          now: new Date(),
+        },
+      });
+      return reply.code(201).send(commit);
+    } catch (error) {
+      if (error instanceof Error && error.message.startsWith("Stale dependency:")) {
+        return reply
+          .code(409)
+          .send({ error: "Commit Conflict", reason: error.message });
+      }
+      throw error;
+    }
   });
 
   app.get("/novels/:novelId/events", async request => {
@@ -4186,6 +4480,11 @@ function taskSceneId(candidate: Candidate): string {
   );
   if (!taskVersion) throw new Error("Candidate has no scene target");
   return taskVersion.objectId;
+}
+
+function hasSceneChange(change: Candidate["change"]): boolean {
+  const changes = change.type === "composite" ? change.changes : [change];
+  return changes.some(atomicChange => atomicChange.type === "text" || atomicChange.type === "local_text");
 }
 ```
 
@@ -4204,7 +4503,7 @@ export function createNovelBrainServer(dependencies: ApiDependencies) {
 
 Run: `npm test -- --run tests/http/api.test.ts`
 
-Expected: PASS with 2 API tests.
+Expected: PASS with 8 API tests.
 
 - [ ] **Step 6: Commit**
 
@@ -4216,6 +4515,10 @@ git commit -m "feat: add core engine http api"
 ---
 
 ### Task 18: PostgreSQL Persistence Mapping
+
+Prisma repositories serialize domain payloads as JSON at the infrastructure boundary. Revision repositories use a transaction and reject conflicting reuse of an existing revision ID.
+
+`vitest.integration.config.ts` defaults `DATABASE_URL` to `postgresql://novelbrain:novelbrain@localhost:5434/novelbrain?schema=public`, matching the Compose service mapping. No shell export is required for `npm run test:integration -- --run`; an explicitly supplied `DATABASE_URL` remains an override.
 
 **Files:**
 
@@ -4619,7 +4922,7 @@ npx prisma migrate dev --name core_engine_persistence
 npm run test:integration -- --run tests/integration/postgresRoundTrip.test.ts
 ```
 
-Expected: PASS with 2 PostgreSQL round-trip tests.
+Expected: PASS with 5 PostgreSQL round-trip tests.
 
 - [ ] **Step 6: Commit**
 
@@ -4631,6 +4934,8 @@ git commit -m "feat: add postgres persistence mapping"
 ---
 
 ### Task 19: Scene Revision Rollback Service
+
+Rollback restores prior anchor metadata through scene-revision-bound normalization and uses atomic batch event persistence. If event persistence fails after the restored scene is saved, rollback compensates by restoring the pre-rollback current scene and surfaces the original failure.
 
 **Files:**
 
@@ -4811,7 +5116,7 @@ export async function rollbackScene(input: {
 
 Run: `npm test -- --run tests/safety/rollbackScene.test.ts`
 
-Expected: PASS with 2 rollback tests.
+Expected: PASS with 3 rollback tests.
 
 - [ ] **Step 5: Commit**
 
@@ -4940,6 +5245,7 @@ npm install
 npm run typecheck
 npm test -- --run
 docker compose up -d postgres
+export DATABASE_URL=postgresql://novelbrain:novelbrain@localhost:5434/novelbrain?schema=public
 npx prisma migrate dev
 npm run test:integration -- --run
 ```

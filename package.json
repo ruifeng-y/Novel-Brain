@@ -1,0 +1,22 @@
+{
+  "name": "novel-brain",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "vitest",
+    "test:integration": "vitest --config vitest.integration.config.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "latest",
+    "typescript": "latest",
+    "vitest": "latest"
+  },
+  "dependencies": {
+    "@prisma/client": "^6.19.3",
+    "fastify": "^5.12.5",
+    "prisma": "^6.19.3",
+    "zod": "^4.6.5"
+  }
+}

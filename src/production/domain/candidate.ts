@@ -1,0 +1,162 @@
+import type { DomainId, RevisionId } from "../../shared/domain/ids";
+import type { VersionSet } from "../../shared/domain/versioning";
+import type { TargetSpan } from "../../manuscript/domain/targetSpan";
+
+export type CandidateStatus =
+  | "generated"
+  | "validating"
+  | "validated"
+  | "under_review"
+  | "selected"
+  | "rejected"
+  | "outdated"
+  | "archived";
+
+export type CandidateAtomicChange =
+  | { readonly type: "text"; readonly sceneId: DomainId; readonly text: string }
+  | {
+      readonly type: "structured_state";
+      readonly stateRecordId: DomainId;
+      readonly content: Readonly<Record<string, unknown>>;
+    }
+  | {
+      readonly type: "canonical_fact";
+      readonly canonicalFactId: DomainId;
+      readonly content: Readonly<Record<string, unknown>>;
+    }
+  | {
+      readonly type: "local_text";
+      readonly sceneId: DomainId;
+      readonly targetSpan: TargetSpan;
+      readonly replacement: string;
+    };
+
+export interface CompositeCandidateChange {
+  readonly type: "composite";
+  readonly changes: readonly CandidateAtomicChange[];
+}
+
+export type CandidateChange = CandidateAtomicChange | CompositeCandidateChange;
+
+export interface Candidate {
+  readonly id: DomainId;
+  readonly taskId: DomainId;
+  readonly novelId: DomainId;
+  readonly change: CandidateChange;
+  readonly basedOnVersionSet: VersionSet;
+  readonly currentRevisionId: RevisionId;
+  readonly status: CandidateStatus;
+  readonly rejectionReason?: string;
+  readonly createdAt: Date;
+  readonly updatedAt: Date;
+}
+
+function isTerminalCandidateStatus(status: CandidateStatus): boolean {
+  return status === "selected" || status === "rejected" || status === "outdated" || status === "archived";
+}
+
+function lifecycleRevisionId(candidate: Candidate, state: CandidateStatus): RevisionId {
+  return `${candidate.currentRevisionId}:${state}`;
+}
+
+export function createCandidate(input: {
+  id: DomainId;
+  taskId: DomainId;
+  novelId: DomainId;
+  basedOnVersionSet: VersionSet;
+  change: CandidateChange;
+  createdAt: Date;
+}): Candidate {
+  if (!input.id) throw new Error("id is required");
+  if (!input.taskId) throw new Error("taskId is required");
+  if (!input.novelId) throw new Error("novelId is required");
+  if (Object.keys(input.basedOnVersionSet).length === 0) {
+    throw new Error("basedOnVersionSet must contain at least one dependency");
+  }
+  if (input.change.type === "composite" && input.change.changes.length === 0) {
+    throw new Error("composite change requires at least one atomic change");
+  }
+
+  return Object.freeze({
+    id: input.id,
+    taskId: input.taskId,
+    novelId: input.novelId,
+    change: input.change,
+    basedOnVersionSet: input.basedOnVersionSet,
+    currentRevisionId: `${input.id}-rev-1`,
+    status: "generated",
+    createdAt: input.createdAt,
+    updatedAt: input.createdAt,
+  });
+}
+
+export function editCandidate(input: {
+  candidate: Candidate;
+  change: CandidateChange;
+  revisionId: RevisionId;
+  updatedAt: Date;
+}): Candidate {
+  if (!input.revisionId) throw new Error("revisionId is required");
+  if (isTerminalCandidateStatus(input.candidate.status)) {
+    throw new Error("Terminal candidate cannot be edited");
+  }
+  if (input.updatedAt < input.candidate.updatedAt) throw new Error("updatedAt cannot move backward");
+  return Object.freeze({
+    ...input.candidate,
+    change: input.change,
+    currentRevisionId: input.revisionId,
+    updatedAt: input.updatedAt,
+  });
+}
+
+export function selectCandidate(candidate: Candidate, updatedAt: Date): Candidate {
+  if (candidate.status !== "validated" && candidate.status !== "under_review") {
+    throw new Error("Only a validated or under-review candidate can be selected");
+  }
+  return Object.freeze({
+    ...candidate,
+    currentRevisionId: lifecycleRevisionId(candidate, "selected"),
+    status: "selected",
+    updatedAt,
+  });
+}
+
+export function markCandidateValidated(candidate: Candidate, updatedAt: Date): Candidate {
+  if (isTerminalCandidateStatus(candidate.status)) {
+    throw new Error("Terminal candidate cannot become validated");
+  }
+  if (candidate.status !== "generated" && candidate.status !== "validating") {
+    throw new Error("Only a generated or validating candidate can become validated");
+  }
+  return Object.freeze({
+    ...candidate,
+    currentRevisionId: lifecycleRevisionId(candidate, "validated"),
+    status: "validated",
+    updatedAt,
+  });
+}
+
+export function rejectCandidate(candidate: Candidate, reason: string): Candidate {
+  if (isTerminalCandidateStatus(candidate.status)) {
+    throw new Error("Terminal candidate cannot be rejected");
+  }
+  if (!reason.trim()) throw new Error("rejection reason is required");
+  return Object.freeze({
+    ...candidate,
+    currentRevisionId: lifecycleRevisionId(candidate, "rejected"),
+    status: "rejected",
+    rejectionReason: reason.trim(),
+  });
+}
+
+export function markCandidateOutdated(candidate: Candidate, updatedAt: Date): Candidate {
+  if (isTerminalCandidateStatus(candidate.status)) {
+    throw new Error("Terminal candidate cannot become outdated");
+  }
+  return Object.freeze({
+    ...candidate,
+    currentRevisionId: lifecycleRevisionId(candidate, "outdated"),
+    status: "outdated",
+    updatedAt,
+  });
+}
