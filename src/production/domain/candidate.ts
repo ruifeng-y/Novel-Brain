@@ -44,6 +44,10 @@ export interface Candidate {
   readonly updatedAt: Date;
 }
 
+function isTerminalCandidateStatus(status: CandidateStatus): boolean {
+  return status === "selected" || status === "rejected" || status === "outdated" || status === "archived";
+}
+
 export function createCandidate(input: {
   id: DomainId;
   taskId: DomainId;
@@ -55,6 +59,9 @@ export function createCandidate(input: {
   if (!input.id) throw new Error("id is required");
   if (!input.taskId) throw new Error("taskId is required");
   if (!input.novelId) throw new Error("novelId is required");
+  if (Object.keys(input.basedOnVersionSet).length === 0) {
+    throw new Error("basedOnVersionSet must contain at least one dependency");
+  }
 
   return Object.freeze({
     id: input.id,
@@ -76,6 +83,9 @@ export function editCandidate(input: {
   updatedAt: Date;
 }): Candidate {
   if (!input.revisionId) throw new Error("revisionId is required");
+  if (isTerminalCandidateStatus(input.candidate.status)) {
+    throw new Error("Terminal candidate cannot be edited");
+  }
   if (input.updatedAt < input.candidate.updatedAt) throw new Error("updatedAt cannot move backward");
   return Object.freeze({
     ...input.candidate,
@@ -93,6 +103,9 @@ export function selectCandidate(candidate: Candidate, updatedAt: Date): Candidat
 }
 
 export function markCandidateValidated(candidate: Candidate, updatedAt: Date): Candidate {
+  if (isTerminalCandidateStatus(candidate.status)) {
+    throw new Error("Terminal candidate cannot become validated");
+  }
   if (candidate.status !== "generated" && candidate.status !== "validating") {
     throw new Error("Only a generated or validating candidate can become validated");
   }
@@ -100,11 +113,16 @@ export function markCandidateValidated(candidate: Candidate, updatedAt: Date): C
 }
 
 export function rejectCandidate(candidate: Candidate, reason: string): Candidate {
-  if (candidate.status === "selected") throw new Error("A selected candidate cannot be rejected");
+  if (isTerminalCandidateStatus(candidate.status)) {
+    throw new Error("Terminal candidate cannot be rejected");
+  }
   if (!reason.trim()) throw new Error("rejection reason is required");
   return Object.freeze({ ...candidate, status: "rejected", rejectionReason: reason.trim() });
 }
 
 export function markCandidateOutdated(candidate: Candidate, updatedAt: Date): Candidate {
+  if (isTerminalCandidateStatus(candidate.status)) {
+    throw new Error("Terminal candidate cannot become outdated");
+  }
   return Object.freeze({ ...candidate, status: "outdated", updatedAt });
 }

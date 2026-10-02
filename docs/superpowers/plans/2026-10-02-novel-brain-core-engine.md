@@ -77,6 +77,7 @@ src/
       ids.ts
       versioning.ts
       contentHash.ts
+      immutable.ts
     application/
       repository.ts
     infrastructure/
@@ -621,6 +622,7 @@ Expected: FAIL because the CanonicalFact module does not exist.
 
 ```ts
 import type { DomainId, RevisionId } from "../../../shared/domain/ids";
+import { deepFreeze } from "../../../shared/domain/immutable";
 
 export type CanonicalFactType =
   | "character_profile"
@@ -669,7 +671,7 @@ export function createCanonicalFact(input: CreateCanonicalFactInput): CanonicalF
     id: input.id,
     novelId: input.novelId,
     type: input.type,
-    content: Object.freeze({ ...input.content }),
+    content: deepFreeze({ ...input.content }),
     currentRevisionId: input.revisionId,
     lastCommitId: input.commitId,
     createdAt: input.createdAt,
@@ -684,7 +686,7 @@ export function replaceCanonicalFact(input: ReplaceCanonicalFactInput): Canonica
 
   return Object.freeze({
     ...input.fact,
-    content: Object.freeze({ ...input.content }),
+    content: deepFreeze({ ...input.content }),
     currentRevisionId: input.revisionId,
     lastCommitId: input.commitId,
     updatedAt: input.updatedAt,
@@ -696,7 +698,7 @@ export function replaceCanonicalFact(input: ReplaceCanonicalFactInput): Canonica
 
 Run: `npm test -- --run tests/narrative/canonicalFact.test.ts`
 
-Expected: PASS with 3 CanonicalFact tests.
+Expected: PASS with 4 CanonicalFact tests.
 
 - [ ] **Step 5: Commit**
 
@@ -801,6 +803,7 @@ Expected: FAIL because the state record module does not exist.
 
 ```ts
 import type { DomainId, RevisionId } from "../../../shared/domain/ids";
+import { deepFreeze } from "../../../shared/domain/immutable";
 
 export type StateRecordType =
   | "character_state"
@@ -871,8 +874,8 @@ export function createStateRecord(input: CreateStateRecordInput): StateRecord {
     novelId: input.novelId,
     type: input.type,
     subjectId: input.subjectId,
-    position: Object.freeze({ ...input.position }),
-    content: Object.freeze({ ...input.content }),
+    position: deepFreeze({ ...input.position }),
+    content: deepFreeze({ ...input.content }),
     currentRevisionId: input.revisionId,
     lastCommitId: input.commitId,
     createdAt: input.createdAt,
@@ -887,7 +890,7 @@ export function replaceStateRecord(input: ReplaceStateRecordInput): StateRecord 
 
   return Object.freeze({
     ...input.record,
-    content: Object.freeze({ ...input.content }),
+    content: deepFreeze({ ...input.content }),
     currentRevisionId: input.revisionId,
     lastCommitId: input.commitId,
     updatedAt: input.updatedAt,
@@ -899,7 +902,7 @@ export function replaceStateRecord(input: ReplaceStateRecordInput): StateRecord 
 
 Run: `npm test -- --run tests/narrative/stateRecord.test.ts`
 
-Expected: PASS with 3 StateRecord tests.
+Expected: PASS with 4 StateRecord tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1171,6 +1174,36 @@ export interface Scene {
   readonly updatedAt: Date;
 }
 
+export interface SceneRevision {
+  readonly sceneId: DomainId;
+  readonly revisionId: RevisionId;
+  readonly text: string;
+  readonly spanAnchors: Readonly<Record<string, string>>;
+  readonly commitId: DomainId;
+}
+
+export function toSceneRevision(scene: Scene): SceneRevision {
+  return Object.freeze({
+    sceneId: scene.id,
+    revisionId: scene.currentRevisionId,
+    text: scene.text,
+    spanAnchors: scene.spanAnchors,
+    commitId: scene.lastCommitId,
+  });
+}
+
+function assertSpanAnchors(text: string, spanAnchors: Readonly<Record<string, string>>): void {
+  for (const [anchorId, anchoredText] of Object.entries(spanAnchors)) {
+    if (!anchorId.trim()) throw new Error("spanAnchors keys must not be empty");
+    if (!anchoredText) throw new Error(`Target span anchor text is empty: ${anchorId}`);
+    const start = text.indexOf(anchoredText);
+    if (start < 0) throw new Error(`Target span anchor text is not present in scene: ${anchorId}`);
+    if (text.indexOf(anchoredText, start + 1) >= 0) {
+      throw new Error(`Target span anchor text is ambiguous: ${anchorId}`);
+    }
+  }
+}
+
 export function createScene(input: {
   id: DomainId;
   novelId: DomainId;
@@ -1211,10 +1244,12 @@ export function commitSceneText(input: {
   if (!input.revisionId) throw new Error("revisionId is required");
   if (!input.commitId) throw new Error("commitId is required");
   if (input.updatedAt < input.scene.updatedAt) throw new Error("updatedAt cannot move backward");
+  const spanAnchors = input.spanAnchors ?? {};
+  assertSpanAnchors(input.text, spanAnchors);
   return Object.freeze({
     ...input.scene,
     text: input.text,
-    spanAnchors: Object.freeze({ ...(input.spanAnchors ?? input.scene.spanAnchors) }),
+    spanAnchors: Object.freeze({ ...spanAnchors }),
     currentRevisionId: input.revisionId,
     lastCommitId: input.commitId,
     updatedAt: input.updatedAt,
@@ -1252,6 +1287,9 @@ export function resolveTargetSpan(scene: Scene, span: TargetSpan): ResolvedSpan 
 
   const start = scene.text.indexOf(anchoredText);
   if (start < 0) throw new Error(`Target span is not present in scene: ${span.anchorId}`);
+  if (scene.text.indexOf(anchoredText, start + 1) >= 0) {
+    throw new Error(`Target span text is ambiguous: ${span.anchorId}`);
+  }
   return Object.freeze({ start, end: start + anchoredText.length, text: anchoredText });
 }
 
@@ -1269,7 +1307,7 @@ export function replaceTargetSpan(input: {
 
 Run: `npm test -- --run tests/manuscript/manuscript.test.ts`
 
-Expected: PASS with 4 manuscript tests.
+Expected: PASS with 6 manuscript tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1355,7 +1393,7 @@ describe("GenerationTask", () => {
     const stale = markGenerationTaskStale(running, new Date("2026-10-04T00:00:00.000Z"));
     expect(stale.status).toBe("stale");
     expect(() => startGenerationTask(stale, new Date("2026-10-05T00:00:00.000Z"))).toThrow(
-      "Only a draft task can start",
+      "Only a draft or ready task can start",
     );
     const cancelled = cancelGenerationTask(task(), new Date("2026-10-05T00:00:00.000Z"));
     expect(cancelled.status).toBe("cancelled");
@@ -1410,6 +1448,10 @@ export interface GenerationTask {
   readonly updatedAt: Date;
 }
 
+function isTerminalTaskStatus(status: GenerationTaskStatus): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled" || status === "stale" || status === "expired";
+}
+
 export function createGenerationTask(input: {
   id: DomainId;
   novelId: DomainId;
@@ -1423,6 +1465,15 @@ export function createGenerationTask(input: {
   if (!input.novelId) throw new Error("novelId is required");
   if (!input.targetSceneId) throw new Error("targetSceneId is required");
   if (!input.intent.trim()) throw new Error("intent is required");
+  if (Object.keys(input.basedOnVersionSet).length === 0) {
+    throw new Error("basedOnVersionSet must contain the target scene version");
+  }
+  const hasTargetVersion = Object.values(input.basedOnVersionSet).some(
+    reference => reference.aggregateType === "Scene" && reference.objectId === input.targetSceneId,
+  );
+  if (!hasTargetVersion) {
+    throw new Error("basedOnVersionSet must include the target scene version");
+  }
 
   return Object.freeze({
     id: input.id,
@@ -1439,13 +1490,14 @@ export function createGenerationTask(input: {
 }
 
 export function startGenerationTask(task: GenerationTask, updatedAt: Date): GenerationTask {
-  if (task.status !== "draft" && task.status !== "ready") throw new Error("Only a draft task can start");
+  if (task.status !== "draft" && task.status !== "ready") throw new Error("Only a draft or ready task can start");
   if (updatedAt < task.updatedAt) throw new Error("updatedAt cannot move backward");
   return Object.freeze({ ...task, status: "running", updatedAt });
 }
 
 export function addCandidateReference(task: GenerationTask, candidateId: DomainId): GenerationTask {
   if (!candidateId) throw new Error("candidateId is required");
+  if (isTerminalTaskStatus(task.status)) throw new Error("Terminal task cannot add candidates");
   if (task.candidateIds.includes(candidateId)) return task;
   return Object.freeze({
     ...task,
@@ -1462,6 +1514,11 @@ export function completeGenerationTask(input: {
     throw new Error("GenerationTask requires at least one candidate to complete");
   }
   if (input.task.status !== "running") throw new Error("Only a running task can complete");
+  for (const candidateId of input.candidateIds) {
+    if (!input.task.candidateIds.includes(candidateId)) {
+      throw new Error(`Candidate reference is not associated with task: ${candidateId}`);
+    }
+  }
   if (input.updatedAt < input.task.updatedAt) throw new Error("updatedAt cannot move backward");
   return Object.freeze({
     ...input.task,
@@ -1472,11 +1529,14 @@ export function completeGenerationTask(input: {
 }
 
 export function cancelGenerationTask(task: GenerationTask, updatedAt: Date): GenerationTask {
-  if (task.status === "completed") throw new Error("A completed task cannot be cancelled");
+  if (isTerminalTaskStatus(task.status)) throw new Error("Only a draft, ready, or running task can be cancelled");
+  if (updatedAt < task.updatedAt) throw new Error("updatedAt cannot move backward");
   return Object.freeze({ ...task, status: "cancelled", updatedAt });
 }
 
 export function markGenerationTaskStale(task: GenerationTask, updatedAt: Date): GenerationTask {
+  if (isTerminalTaskStatus(task.status)) throw new Error("Only a draft, ready, or running task can become stale");
+  if (updatedAt < task.updatedAt) throw new Error("updatedAt cannot move backward");
   return Object.freeze({ ...task, status: "stale", updatedAt });
 }
 ```
@@ -1485,7 +1545,7 @@ export function markGenerationTaskStale(task: GenerationTask, updatedAt: Date): 
 
 Run: `npm test -- --run tests/production/generationTask.test.ts`
 
-Expected: PASS with 4 GenerationTask tests.
+Expected: PASS with 6 GenerationTask tests.
 
 - [ ] **Step 5: Commit**
 
@@ -1564,7 +1624,7 @@ describe("Candidate", () => {
     const original = markCandidateValidated(candidate(), new Date("2026-10-03T00:00:00.000Z"));
     const selected = selectCandidate(original, new Date("2026-10-03T00:00:00.000Z"));
     expect(selected.status).toBe("selected");
-    expect(() => rejectCandidate(selected, "Not preferred")).toThrow("A selected candidate cannot be rejected");
+    expect(() => rejectCandidate(selected, "Not preferred")).toThrow("Terminal candidate cannot be rejected");
 
     const rejected = rejectCandidate(candidate(), "Not preferred");
     expect(rejected.status).toBe("rejected");
@@ -1631,6 +1691,10 @@ export interface Candidate {
   readonly updatedAt: Date;
 }
 
+function isTerminalCandidateStatus(status: CandidateStatus): boolean {
+  return status === "selected" || status === "rejected" || status === "outdated" || status === "archived";
+}
+
 export function createCandidate(input: {
   id: DomainId;
   taskId: DomainId;
@@ -1642,6 +1706,9 @@ export function createCandidate(input: {
   if (!input.id) throw new Error("id is required");
   if (!input.taskId) throw new Error("taskId is required");
   if (!input.novelId) throw new Error("novelId is required");
+  if (Object.keys(input.basedOnVersionSet).length === 0) {
+    throw new Error("basedOnVersionSet must contain at least one dependency");
+  }
 
   return Object.freeze({
     id: input.id,
@@ -1663,6 +1730,9 @@ export function editCandidate(input: {
   updatedAt: Date;
 }): Candidate {
   if (!input.revisionId) throw new Error("revisionId is required");
+  if (isTerminalCandidateStatus(input.candidate.status)) {
+    throw new Error("Terminal candidate cannot be edited");
+  }
   if (input.updatedAt < input.candidate.updatedAt) throw new Error("updatedAt cannot move backward");
   return Object.freeze({
     ...input.candidate,
@@ -1680,6 +1750,9 @@ export function selectCandidate(candidate: Candidate, updatedAt: Date): Candidat
 }
 
 export function markCandidateValidated(candidate: Candidate, updatedAt: Date): Candidate {
+  if (isTerminalCandidateStatus(candidate.status)) {
+    throw new Error("Terminal candidate cannot become validated");
+  }
   if (candidate.status !== "generated" && candidate.status !== "validating") {
     throw new Error("Only a generated or validating candidate can become validated");
   }
@@ -1687,12 +1760,15 @@ export function markCandidateValidated(candidate: Candidate, updatedAt: Date): C
 }
 
 export function rejectCandidate(candidate: Candidate, reason: string): Candidate {
-  if (candidate.status === "selected") throw new Error("A selected candidate cannot be rejected");
+  if (isTerminalCandidateStatus(candidate.status)) throw new Error("Terminal candidate cannot be rejected");
   if (!reason.trim()) throw new Error("rejection reason is required");
   return Object.freeze({ ...candidate, status: "rejected", rejectionReason: reason.trim() });
 }
 
 export function markCandidateOutdated(candidate: Candidate, updatedAt: Date): Candidate {
+  if (isTerminalCandidateStatus(candidate.status)) {
+    throw new Error("Terminal candidate cannot become outdated");
+  }
   return Object.freeze({ ...candidate, status: "outdated", updatedAt });
 }
 ```
@@ -1701,7 +1777,7 @@ export function markCandidateOutdated(candidate: Candidate, updatedAt: Date): Ca
 
 Run: `npm test -- --run tests/production/candidate.test.ts`
 
-Expected: PASS with 3 Candidate tests.
+Expected: PASS with 6 Candidate tests.
 
 - [ ] **Step 5: Commit**
 

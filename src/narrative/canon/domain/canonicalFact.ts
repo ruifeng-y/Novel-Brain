@@ -1,4 +1,5 @@
 import type { DomainId, RevisionId } from "../../../shared/domain/ids";
+import { deepFreeze } from "../../../shared/domain/immutable";
 
 export type CanonicalFactType =
   | "character_profile"
@@ -47,7 +48,7 @@ export function createCanonicalFact(input: CreateCanonicalFactInput): CanonicalF
     id: input.id,
     novelId: input.novelId,
     type: input.type,
-    content: Object.freeze({ ...input.content }),
+    content: deepFreeze({ ...input.content }),
     currentRevisionId: input.revisionId,
     lastCommitId: input.commitId,
     createdAt: input.createdAt,
@@ -62,7 +63,7 @@ export function replaceCanonicalFact(input: ReplaceCanonicalFactInput): Canonica
 
   return Object.freeze({
     ...input.fact,
-    content: Object.freeze({ ...input.content }),
+    content: deepFreeze({ ...input.content }),
     currentRevisionId: input.revisionId,
     lastCommitId: input.commitId,
     updatedAt: input.updatedAt,

@@ -27,6 +27,9 @@ export function resolveTargetSpan(scene: Scene, span: TargetSpan): ResolvedSpan 
 
   const start = scene.text.indexOf(anchoredText);
   if (start < 0) throw new Error(`Target span is not present in scene: ${span.anchorId}`);
+  if (scene.text.indexOf(anchoredText, start + 1) >= 0) {
+    throw new Error(`Target span text is ambiguous: ${span.anchorId}`);
+  }
   return Object.freeze({ start, end: start + anchoredText.length, text: anchoredText });
 }
 

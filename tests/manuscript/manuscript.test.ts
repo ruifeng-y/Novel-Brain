@@ -7,6 +7,7 @@ import {
   createScene,
   replaceTargetSpan,
   resolveTargetSpan,
+  toSceneRevision,
 } from "../../src/manuscript/domain/scene";
 
 const now = new Date("2026-10-02T00:00:00.000Z");
@@ -60,6 +61,13 @@ describe("manuscript aggregates", () => {
     expect(scene.text).toBe("");
     expect(committed.text).toBe("Lin Chuan stopped at the gate.");
     expect(committed.currentRevisionId).toBe("scene-rev-2");
+    expect(toSceneRevision(committed)).toEqual({
+      sceneId: "scene-1",
+      revisionId: "scene-rev-2",
+      text: "Lin Chuan stopped at the gate.",
+      spanAnchors: {},
+      commitId: "commit-2",
+    });
   });
 
   it("replaces only a valid target span and rejects stale source text", () => {
@@ -118,5 +126,63 @@ describe("manuscript aggregates", () => {
     });
 
     expect(resolved).toEqual({ start: 17, end: 34, text: "Second paragraph." });
+  });
+
+  it("rejects ambiguous duplicate target text", () => {
+    const scene = createScene({
+      id: "scene-duplicate",
+      novelId: "novel-1",
+      chapterId: "chapter-1",
+      title: "Duplicate text",
+      revisionId: "scene-rev-1",
+      commitId: "commit-1",
+      createdAt: now,
+    });
+    expect(() =>
+      commitSceneText({
+        scene,
+        text: "Repeated. Repeated.",
+        spanAnchors: { "span-duplicate": "Repeated." },
+        revisionId: "scene-rev-2",
+        commitId: "commit-2",
+        updatedAt: now,
+      }),
+    ).toThrow("Target span anchor text is ambiguous: span-duplicate");
+  });
+
+  it("clears old anchors when full text is committed without new anchors", () => {
+    const scene = createScene({
+      id: "scene-clear",
+      novelId: "novel-1",
+      chapterId: "chapter-1",
+      title: "Clear anchors",
+      revisionId: "scene-rev-1",
+      commitId: "commit-1",
+      createdAt: now,
+    });
+    const anchored = commitSceneText({
+      scene,
+      text: "Original target.",
+      spanAnchors: { "span-clear": "Original target." },
+      revisionId: "scene-rev-2",
+      commitId: "commit-2",
+      updatedAt: now,
+    });
+    const fullReplacement = commitSceneText({
+      scene: anchored,
+      text: "Completely different text.",
+      revisionId: "scene-rev-3",
+      commitId: "commit-3",
+      updatedAt: new Date("2026-10-03T00:00:00.000Z"),
+    });
+
+    expect(fullReplacement.spanAnchors).toEqual({});
+    expect(() =>
+      resolveTargetSpan(fullReplacement, {
+        anchorId: "span-clear",
+        text: "Original target.",
+        sourceContentHash: hashContent("Original target."),
+      }),
+    ).toThrow("Target span anchor not found: span-clear");
   });
 });

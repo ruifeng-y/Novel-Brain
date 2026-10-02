@@ -32,6 +32,19 @@ describe("Candidate", () => {
     });
   });
 
+  it("requires a precise non-empty based-on version set", () => {
+    expect(() =>
+      createCandidate({
+        id: "candidate-empty",
+        taskId: "task-1",
+        novelId: "novel-1",
+        basedOnVersionSet: createVersionSet({}),
+        change: { type: "text", sceneId: "scene-1", text: "Candidate text" },
+        createdAt: now,
+      }),
+    ).toThrow("basedOnVersionSet must contain at least one dependency");
+  });
+
   it("creates a new candidate revision after author edits", () => {
     const original = candidate();
     const edited = editCandidate({
@@ -50,7 +63,7 @@ describe("Candidate", () => {
     const original = markCandidateValidated(candidate(), new Date("2026-10-03T00:00:00.000Z"));
     const selected = selectCandidate(original, new Date("2026-10-03T00:00:00.000Z"));
     expect(selected.status).toBe("selected");
-    expect(() => rejectCandidate(selected, "Not preferred")).toThrow("A selected candidate cannot be rejected");
+    expect(() => rejectCandidate(selected, "Not preferred")).toThrow("Terminal candidate cannot be rejected");
 
     const rejected = rejectCandidate(candidate(), "Not preferred");
     expect(rejected.status).toBe("rejected");
@@ -58,5 +71,48 @@ describe("Candidate", () => {
 
     const outdated = markCandidateOutdated(candidate(), new Date("2026-10-03T00:00:00.000Z"));
     expect(outdated.status).toBe("outdated");
+  });
+
+  it("rejects edits and terminal transitions after selection", () => {
+    const selected = selectCandidate(
+      markCandidateValidated(candidate(), new Date("2026-10-03T00:00:00.000Z")),
+      new Date("2026-10-03T00:00:00.000Z"),
+    );
+    expect(() =>
+      editCandidate({
+        candidate: selected,
+        change: { type: "text", sceneId: "scene-1", text: "Late edit" },
+        revisionId: "candidate-rev-late",
+        updatedAt: new Date("2026-10-04T00:00:00.000Z"),
+      }),
+    ).toThrow("Terminal candidate cannot be edited");
+    expect(() => rejectCandidate(selected, "Late rejection")).toThrow(
+      "Terminal candidate cannot be rejected",
+    );
+    expect(() => markCandidateOutdated(selected, new Date("2026-10-04T00:00:00.000Z"))).toThrow(
+      "Terminal candidate cannot become outdated",
+    );
+  });
+
+  it("rejects edits after rejection, outdated, or archived states", () => {
+    const rejected = rejectCandidate(candidate(), "Not preferred");
+    const outdated = markCandidateOutdated(candidate(), new Date("2026-10-03T00:00:00.000Z"));
+    const archived = Object.freeze({ ...candidate(), status: "archived" as const });
+    for (const terminal of [rejected, outdated, archived]) {
+      expect(() =>
+        editCandidate({
+          candidate: terminal,
+          change: { type: "text", sceneId: "scene-1", text: "Late edit" },
+          revisionId: "candidate-rev-late",
+          updatedAt: new Date("2026-10-04T00:00:00.000Z"),
+        }),
+      ).toThrow("Terminal candidate cannot be edited");
+    }
+    expect(() => markCandidateOutdated(rejected, new Date("2026-10-04T00:00:00.000Z"))).toThrow(
+      "Terminal candidate cannot become outdated",
+    );
+    expect(() => markCandidateOutdated(archived, new Date("2026-10-04T00:00:00.000Z"))).toThrow(
+      "Terminal candidate cannot become outdated",
+    );
   });
 });

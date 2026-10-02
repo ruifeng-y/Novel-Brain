@@ -17,6 +17,33 @@ describe("CanonicalFact", () => {
 
     expect(fact.currentRevisionId).toBe("fact-rev-1");
     expect(fact.content).toEqual({ name: "Lin Chuan", sect: "Northern Sect" });
+    expect(Object.isFrozen(fact.content)).toBe(true);
+  });
+
+  it("deep-freezes nested canonical content", () => {
+    const fact = createCanonicalFact({
+      id: "fact-nested",
+      novelId: "novel-1",
+      type: "character_profile",
+      content: { traits: { patience: 8 }, tags: [{ value: "sword" }] },
+      revisionId: "fact-rev-1",
+      commitId: "commit-1",
+      createdAt: now,
+    });
+
+    const traits = (fact.content as { traits: Record<string, number> }).traits;
+    const tags = (fact.content as { tags: Array<{ value: string }> }).tags;
+    const firstTag = tags[0];
+    if (!firstTag) throw new Error("Expected nested tag");
+    expect(Object.isFrozen(traits)).toBe(true);
+    expect(Object.isFrozen(tags)).toBe(true);
+    expect(Object.isFrozen(firstTag)).toBe(true);
+    expect(() => {
+      traits.patience = 1;
+    }).toThrow();
+    expect(() => {
+      firstTag.value = "changed";
+    }).toThrow();
   });
 
   it("requires a commit id for canonical replacement", () => {

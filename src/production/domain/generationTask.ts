@@ -36,6 +36,10 @@ export interface GenerationTask {
   readonly updatedAt: Date;
 }
 
+function isTerminalTaskStatus(status: GenerationTaskStatus): boolean {
+  return status === "completed" || status === "failed" || status === "cancelled" || status === "stale" || status === "expired";
+}
+
 export function createGenerationTask(input: {
   id: DomainId;
   novelId: DomainId;
@@ -49,6 +53,15 @@ export function createGenerationTask(input: {
   if (!input.novelId) throw new Error("novelId is required");
   if (!input.targetSceneId) throw new Error("targetSceneId is required");
   if (!input.intent.trim()) throw new Error("intent is required");
+  if (Object.keys(input.basedOnVersionSet).length === 0) {
+    throw new Error("basedOnVersionSet must contain the target scene version");
+  }
+  const hasTargetVersion = Object.values(input.basedOnVersionSet).some(
+    reference => reference.aggregateType === "Scene" && reference.objectId === input.targetSceneId,
+  );
+  if (!hasTargetVersion) {
+    throw new Error("basedOnVersionSet must include the target scene version");
+  }
 
   return Object.freeze({
     id: input.id,
@@ -65,13 +78,14 @@ export function createGenerationTask(input: {
 }
 
 export function startGenerationTask(task: GenerationTask, updatedAt: Date): GenerationTask {
-  if (task.status !== "draft" && task.status !== "ready") throw new Error("Only a draft task can start");
+  if (task.status !== "draft" && task.status !== "ready") throw new Error("Only a draft or ready task can start");
   if (updatedAt < task.updatedAt) throw new Error("updatedAt cannot move backward");
   return Object.freeze({ ...task, status: "running", updatedAt });
 }
 
 export function addCandidateReference(task: GenerationTask, candidateId: DomainId): GenerationTask {
   if (!candidateId) throw new Error("candidateId is required");
+  if (isTerminalTaskStatus(task.status)) throw new Error("Terminal task cannot add candidates");
   if (task.candidateIds.includes(candidateId)) return task;
   return Object.freeze({
     ...task,
@@ -88,6 +102,11 @@ export function completeGenerationTask(input: {
     throw new Error("GenerationTask requires at least one candidate to complete");
   }
   if (input.task.status !== "running") throw new Error("Only a running task can complete");
+  for (const candidateId of input.candidateIds) {
+    if (!input.task.candidateIds.includes(candidateId)) {
+      throw new Error(`Candidate reference is not associated with task: ${candidateId}`);
+    }
+  }
   if (input.updatedAt < input.task.updatedAt) throw new Error("updatedAt cannot move backward");
   return Object.freeze({
     ...input.task,
@@ -98,10 +117,13 @@ export function completeGenerationTask(input: {
 }
 
 export function cancelGenerationTask(task: GenerationTask, updatedAt: Date): GenerationTask {
-  if (task.status === "completed") throw new Error("A completed task cannot be cancelled");
+  if (isTerminalTaskStatus(task.status)) throw new Error("Only a draft, ready, or running task can be cancelled");
+  if (updatedAt < task.updatedAt) throw new Error("updatedAt cannot move backward");
   return Object.freeze({ ...task, status: "cancelled", updatedAt });
 }
 
 export function markGenerationTaskStale(task: GenerationTask, updatedAt: Date): GenerationTask {
+  if (isTerminalTaskStatus(task.status)) throw new Error("Only a draft, ready, or running task can become stale");
+  if (updatedAt < task.updatedAt) throw new Error("updatedAt cannot move backward");
   return Object.freeze({ ...task, status: "stale", updatedAt });
 }

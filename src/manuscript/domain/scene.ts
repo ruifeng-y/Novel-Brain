@@ -16,6 +16,41 @@ export interface Scene {
   readonly updatedAt: Date;
 }
 
+export interface SceneRevision {
+  readonly sceneId: DomainId;
+  readonly revisionId: RevisionId;
+  readonly text: string;
+  readonly spanAnchors: Readonly<Record<string, string>>;
+  readonly commitId: DomainId;
+}
+
+export function toSceneRevision(scene: Scene): SceneRevision {
+  return Object.freeze({
+    sceneId: scene.id,
+    revisionId: scene.currentRevisionId,
+    text: scene.text,
+    spanAnchors: scene.spanAnchors,
+    commitId: scene.lastCommitId,
+  });
+}
+
+function assertSpanAnchors(
+  text: string,
+  spanAnchors: Readonly<Record<string, string>>,
+): void {
+  for (const [anchorId, anchoredText] of Object.entries(spanAnchors)) {
+    if (!anchorId.trim()) throw new Error("spanAnchors keys must not be empty");
+    if (!anchoredText) throw new Error(`Target span anchor text is empty: ${anchorId}`);
+    const start = text.indexOf(anchoredText);
+    if (start < 0) {
+      throw new Error(`Target span anchor text is not present in scene: ${anchorId}`);
+    }
+    if (text.indexOf(anchoredText, start + 1) >= 0) {
+      throw new Error(`Target span anchor text is ambiguous: ${anchorId}`);
+    }
+  }
+}
+
 export function createScene(input: {
   id: DomainId;
   novelId: DomainId;
@@ -56,10 +91,12 @@ export function commitSceneText(input: {
   if (!input.revisionId) throw new Error("revisionId is required");
   if (!input.commitId) throw new Error("commitId is required");
   if (input.updatedAt < input.scene.updatedAt) throw new Error("updatedAt cannot move backward");
+  const spanAnchors = input.spanAnchors ?? {};
+  assertSpanAnchors(input.text, spanAnchors);
   return Object.freeze({
     ...input.scene,
     text: input.text,
-    spanAnchors: Object.freeze({ ...(input.spanAnchors ?? input.scene.spanAnchors) }),
+    spanAnchors: Object.freeze({ ...spanAnchors }),
     currentRevisionId: input.revisionId,
     lastCommitId: input.commitId,
     updatedAt: input.updatedAt,

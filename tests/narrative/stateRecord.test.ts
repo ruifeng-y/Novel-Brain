@@ -63,4 +63,25 @@ describe("position-aware StateRecord", () => {
     expect(replacement.currentRevisionId).toBe("state-rev-2");
     expect(replacement.position).toEqual(position);
   });
+
+  it("deep-freezes nested state content", () => {
+    const record = createStateRecord({
+      id: "state-nested",
+      novelId: "novel-1",
+      type: "character_state",
+      subjectId: "fact-1",
+      position: { sceneId: "scene-1", ordinal: 0 },
+      content: { knowledge: { facts: ["secret"] } },
+      revisionId: "state-rev-1",
+      commitId: "commit-1",
+      createdAt: now,
+    });
+
+    const knowledge = (record.content as { knowledge: { facts: string[] } }).knowledge;
+    expect(Object.isFrozen(knowledge)).toBe(true);
+    expect(Object.isFrozen(knowledge.facts)).toBe(true);
+    expect(() => {
+      knowledge.facts.push("changed");
+    }).toThrow();
+  });
 });

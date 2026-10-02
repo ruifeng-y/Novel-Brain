@@ -41,6 +41,33 @@ describe("GenerationTask", () => {
     expect(started.candidateIds).toEqual([]);
   });
 
+  it("requires the target scene version and rejects empty version sets", () => {
+    expect(() =>
+      createGenerationTask({
+        id: "task-empty",
+        novelId: "novel-1",
+        operation: "rewrite",
+        targetSceneId: "scene-1",
+        intent: "Rewrite the scene.",
+        basedOnVersionSet: createVersionSet({}),
+        createdAt: now,
+      }),
+    ).toThrow("basedOnVersionSet must contain the target scene version");
+    expect(() =>
+      createGenerationTask({
+        id: "task-missing-target",
+        novelId: "novel-1",
+        operation: "rewrite",
+        targetSceneId: "scene-1",
+        intent: "Rewrite the scene.",
+        basedOnVersionSet: createVersionSet({
+          other: createVersionReference("CanonicalFact", "fact-1", "fact-rev-1"),
+        }),
+        createdAt: now,
+      }),
+    ).toThrow("basedOnVersionSet must include the target scene version");
+  });
+
   it("cannot complete without at least one candidate", () => {
     const running = startGenerationTask(task(), new Date("2026-10-03T00:00:00.000Z"));
     expect(() =>
@@ -52,14 +79,44 @@ describe("GenerationTask", () => {
     ).toThrow("GenerationTask requires at least one candidate to complete");
   });
 
+  it("rejects candidate IDs that were not associated with the task", () => {
+    const running = startGenerationTask(
+      addCandidateReference(task(), "candidate-1"),
+      new Date("2026-10-03T00:00:00.000Z"),
+    );
+    expect(() =>
+      completeGenerationTask({
+        task: running,
+        candidateIds: ["candidate-2"],
+        updatedAt: new Date("2026-10-04T00:00:00.000Z"),
+      }),
+    ).toThrow("Candidate reference is not associated with task: candidate-2");
+    expect(
+      completeGenerationTask({
+        task: running,
+        candidateIds: ["candidate-1"],
+        updatedAt: new Date("2026-10-04T00:00:00.000Z"),
+      }).status,
+    ).toBe("completed");
+  });
+
   it("supports stale and cancelled terminal states", () => {
     const running = startGenerationTask(task(), new Date("2026-10-03T00:00:00.000Z"));
     const stale = markGenerationTaskStale(running, new Date("2026-10-04T00:00:00.000Z"));
     expect(stale.status).toBe("stale");
     expect(() => startGenerationTask(stale, new Date("2026-10-05T00:00:00.000Z"))).toThrow(
-      "Only a draft task can start",
+      "Only a draft or ready task can start",
+    );
+    expect(() => markGenerationTaskStale(stale, new Date("2026-10-05T00:00:00.000Z"))).toThrow(
+      "Only a draft, ready, or running task can become stale",
+    );
+    expect(() => cancelGenerationTask(stale, new Date("2026-10-05T00:00:00.000Z"))).toThrow(
+      "Only a draft, ready, or running task can be cancelled",
     );
     const cancelled = cancelGenerationTask(task(), new Date("2026-10-05T00:00:00.000Z"));
     expect(cancelled.status).toBe("cancelled");
+    expect(() => cancelGenerationTask(cancelled, new Date("2026-10-06T00:00:00.000Z"))).toThrow(
+      "Only a draft, ready, or running task can be cancelled",
+    );
   });
 });

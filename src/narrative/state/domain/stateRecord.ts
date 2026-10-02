@@ -1,4 +1,5 @@
 import type { DomainId, RevisionId } from "../../../shared/domain/ids";
+import { deepFreeze } from "../../../shared/domain/immutable";
 
 export type StateRecordType =
   | "character_state"
@@ -69,8 +70,8 @@ export function createStateRecord(input: CreateStateRecordInput): StateRecord {
     novelId: input.novelId,
     type: input.type,
     subjectId: input.subjectId,
-    position: Object.freeze({ ...input.position }),
-    content: Object.freeze({ ...input.content }),
+    position: deepFreeze({ ...input.position }),
+    content: deepFreeze({ ...input.content }),
     currentRevisionId: input.revisionId,
     lastCommitId: input.commitId,
     createdAt: input.createdAt,
@@ -85,7 +86,7 @@ export function replaceStateRecord(input: ReplaceStateRecordInput): StateRecord 
 
   return Object.freeze({
     ...input.record,
-    content: Object.freeze({ ...input.content }),
+    content: deepFreeze({ ...input.content }),
     currentRevisionId: input.revisionId,
     lastCommitId: input.commitId,
     updatedAt: input.updatedAt,
