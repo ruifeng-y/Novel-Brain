@@ -3908,7 +3908,7 @@ export interface ValidationResult {
   readonly outcome: ValidationOutcome;
 }
 
-The implementation validates each atomic change recursively for composite candidates, rejects scene mismatches and empty structured changes, validates target spans, and combines proposed text for `mustPreserve` checks.
+The implementation validates each atomic change recursively for composite candidates, rejects duplicate targets, empty structured target IDs, scene mismatches, and empty structured changes, distinguishes target-span errors, and checks `mustPreserve` against the resulting scene text after applying local or composite changes.
 
 export function validateCandidate(request: ValidationRequest): ValidationResult {
   const findings: ValidationFinding[] = [];
@@ -3995,7 +3995,7 @@ export function validateCandidate(request: ValidationRequest): ValidationResult 
 
 Run: `npm test -- --run tests/production/basicValidator.test.ts`
 
-Expected: PASS with 4 validator tests.
+Expected: PASS with 9 validator tests.
 
 - [ ] **Step 5: Commit**
 

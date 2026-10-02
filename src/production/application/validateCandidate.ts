@@ -1,6 +1,9 @@
 import type { Candidate, CandidateAtomicChange } from "../domain/candidate";
 import type { Scene } from "../../manuscript/domain/scene";
-import { resolveTargetSpan } from "../../manuscript/domain/targetSpan";
+import {
+  replaceTargetSpan,
+  resolveTargetSpan,
+} from "../../manuscript/domain/targetSpan";
 import {
   createValidationRun,
   type ValidationFinding,
@@ -20,108 +23,171 @@ export interface ValidationResult {
   readonly outcome: ValidationOutcome;
 }
 
+function atomicChanges(change: Candidate["change"]): readonly CandidateAtomicChange[] {
+  return change.type === "composite" ? change.changes : [change];
+}
+
+function targetKey(change: CandidateAtomicChange): string {
+  if (change.type === "text" || change.type === "local_text") {
+    return `Scene:${change.sceneId}`;
+  }
+  if (change.type === "canonical_fact") {
+    return `CanonicalFact:${change.canonicalFactId}`;
+  }
+  return `StateRecord:${change.stateRecordId}`;
+}
+
+function addFinding(
+  findings: ValidationFinding[],
+  code: string,
+  message: string,
+  evidence: Readonly<Record<string, unknown>>,
+): void {
+  findings.push({
+    code,
+    severity: "error",
+    confidence: 1,
+    message,
+    evidence,
+  });
+}
+
+function targetSpanErrorCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("anchor not found")) return "TARGET_ANCHOR_NOT_FOUND";
+  if (message.includes("text does not match")) return "TARGET_TEXT_MISMATCH";
+  if (message.includes("source hash does not match")) return "TARGET_SOURCE_HASH_MISMATCH";
+  if (message.includes("ambiguous")) return "TARGET_SPAN_AMBIGUOUS";
+  if (message.includes("not present")) return "TARGET_TEXT_NOT_FOUND";
+  return "TARGET_SPAN_INVALID";
+}
+
 function validateAtomicChange(
   change: CandidateAtomicChange,
   scene: Scene,
   findings: ValidationFinding[],
-): string[] {
+): void {
   if (change.type === "text") {
     if (change.sceneId !== scene.id) {
-      findings.push({
-        code: "SCENE_MISMATCH",
-        severity: "error",
-        confidence: 1,
-        message: "Text change targets a different scene.",
-        evidence: { expectedSceneId: scene.id, actualSceneId: change.sceneId },
-      });
+      addFinding(
+        findings,
+        "SCENE_MISMATCH",
+        "Text change targets a different scene.",
+        { expectedSceneId: scene.id, actualSceneId: change.sceneId },
+      );
     }
     if (!change.text.trim()) {
-      findings.push({
-        code: "EMPTY_TEXT",
-        severity: "error",
-        confidence: 1,
-        message: "Text candidate cannot be empty.",
-        evidence: { sceneId: change.sceneId },
+      addFinding(findings, "EMPTY_TEXT", "Text candidate cannot be empty.", {
+        sceneId: change.sceneId,
       });
     }
-    return [change.text];
+    return;
   }
 
   if (change.type === "local_text") {
     if (change.sceneId !== scene.id) {
-      findings.push({
-        code: "SCENE_MISMATCH",
-        severity: "error",
-        confidence: 1,
-        message: "Local text change targets a different scene.",
-        evidence: { expectedSceneId: scene.id, actualSceneId: change.sceneId },
-      });
-      return [];
+      addFinding(
+        findings,
+        "SCENE_MISMATCH",
+        "Local text change targets a different scene.",
+        { expectedSceneId: scene.id, actualSceneId: change.sceneId },
+      );
+      return;
     }
     try {
       resolveTargetSpan(scene, change.targetSpan);
     } catch (error) {
-      findings.push({
-        code: "TARGET_SPAN_NOT_FOUND",
-        severity: "error",
-        confidence: 1,
-        message: error instanceof Error ? error.message : "Target span is invalid.",
-        evidence: { anchorId: change.targetSpan.anchorId },
-      });
+      addFinding(
+        findings,
+        targetSpanErrorCode(error),
+        error instanceof Error ? error.message : "Target span is invalid.",
+        { anchorId: change.targetSpan.anchorId },
+      );
     }
-    return [change.replacement];
+    return;
   }
 
-  if (change.type === "structured_state" || change.type === "canonical_fact") {
-    if (Object.keys(change.content).length === 0) {
-      findings.push({
-        code: "EMPTY_STRUCTURED_CHANGE",
-        severity: "error",
-        confidence: 1,
-        message: "Structured candidate cannot be empty.",
-        evidence: {
-          targetId:
-            change.type === "structured_state" ? change.stateRecordId : change.canonicalFactId,
-        },
-      });
-    }
+  const targetId =
+    change.type === "structured_state" ? change.stateRecordId : change.canonicalFactId;
+  if (!targetId.trim()) {
+    addFinding(
+      findings,
+      "EMPTY_STRUCTURED_TARGET_ID",
+      "Structured candidate requires a target id.",
+      { changeType: change.type },
+    );
   }
-  return [];
+  if (Object.keys(change.content).length === 0) {
+    addFinding(
+      findings,
+      "EMPTY_STRUCTURED_CHANGE",
+      "Structured candidate cannot be empty.",
+      { changeType: change.type, targetId },
+    );
+  }
+}
+
+function resultingSceneText(
+  scene: Scene,
+  changes: readonly CandidateAtomicChange[],
+  findings: ValidationFinding[],
+): string {
+  const sceneChanges = changes.filter(
+    (change): change is Extract<CandidateAtomicChange, { type: "text" | "local_text" }> =>
+      change.type === "text" || change.type === "local_text",
+  );
+  if (sceneChanges.length === 0) return scene.text;
+  if (sceneChanges.length > 1) {
+    addFinding(
+      findings,
+      "DUPLICATE_CANDIDATE_TARGET",
+      "Composite candidate contains multiple changes for one scene.",
+      { sceneId: scene.id },
+    );
+    return scene.text;
+  }
+
+  const sceneChange = sceneChanges[0];
+  if (!sceneChange) return scene.text;
+  if (sceneChange.type === "text") return sceneChange.text;
+  try {
+    return replaceTargetSpan({
+      scene,
+      target: sceneChange.targetSpan,
+      replacement: sceneChange.replacement,
+    });
+  } catch {
+    return scene.text;
+  }
 }
 
 export function validateCandidate(request: ValidationRequest): ValidationResult {
   const findings: ValidationFinding[] = [];
-  const proposedTexts: string[] = [];
-
-  if (request.candidate.change.type === "composite") {
-    if (request.candidate.change.changes.length === 0) {
-      findings.push({
-        code: "EMPTY_COMPOSITE_CHANGE",
-        severity: "error",
-        confidence: 1,
-        message: "Composite candidate requires at least one atomic change.",
-        evidence: { candidateId: request.candidate.id },
-      });
+  const changes = atomicChanges(request.candidate.change);
+  const seenTargets = new Set<string>();
+  for (const change of changes) {
+    const key = targetKey(change);
+    if (seenTargets.has(key)) {
+      addFinding(
+        findings,
+        "DUPLICATE_CANDIDATE_TARGET",
+        "Composite candidate contains duplicate targets.",
+        { target: key },
+      );
     }
-    for (const atomicChange of request.candidate.change.changes) {
-      proposedTexts.push(...validateAtomicChange(atomicChange, request.scene, findings));
-    }
-  } else {
-    proposedTexts.push(
-      ...validateAtomicChange(request.candidate.change, request.scene, findings),
-    );
+    seenTargets.add(key);
+    validateAtomicChange(change, request.scene, findings);
   }
 
-  const proposedText = proposedTexts.length > 0 ? proposedTexts.join("\n") : request.scene.text;
+  const proposedText = resultingSceneText(request.scene, changes, findings);
   for (const phrase of request.mustPreserve) {
     if (!proposedText.includes(phrase)) {
-      findings.push({
-        code: "REQUIRED_PHRASE_MISSING",
-        severity: "error",
-        confidence: 1,
-        message: `Required phrase is missing: ${phrase}`,
-        evidence: { phrase },
-      });
+      addFinding(
+        findings,
+        "REQUIRED_PHRASE_MISSING",
+        `Required phrase is missing: ${phrase}`,
+        { phrase },
+      );
     }
   }
 

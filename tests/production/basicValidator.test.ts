@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createCandidate } from "../../src/production/domain/candidate";
-import { commitSceneText, createScene } from "../../src/manuscript/domain/scene";
+import { commitSceneText, createScene, type Scene } from "../../src/manuscript/domain/scene";
 import { hashContent } from "../../src/shared/domain/contentHash";
 import { createVersionReference, createVersionSet } from "../../src/shared/domain/versioning";
 import { validateCandidate } from "../../src/production/application/validateCandidate";
@@ -92,6 +92,27 @@ describe("basic validator", () => {
     expect(result.run.outcome).toBe("pass");
   });
 
+  it("checks must-preserve phrases against the resulting local scene text", () => {
+    const result = validateCandidate({
+      validationId: "validation-local-preserve",
+      candidate: candidate({
+        type: "local_text",
+        sceneId: "scene-1",
+        targetSpan: {
+          anchorId: "span-2",
+          text: "The Northern Sect gate stayed closed.",
+          sourceContentHash: hashContent("The Northern Sect gate stayed closed."),
+        },
+        replacement: "The gate opened slowly.",
+      }),
+      scene: scene(),
+      mustPreserve: ["Lin Chuan waited."],
+      createdAt: now,
+    });
+
+    expect(result.run.outcome).toBe("pass");
+  });
+
   it("validates every atomic change in a composite candidate", () => {
     const result = validateCandidate({
       validationId: "validation-composite",
@@ -112,5 +133,145 @@ describe("basic validator", () => {
     });
 
     expect(result.run.outcome).toBe("pass");
+  });
+
+  it("checks must-preserve phrases against composite resulting scene text", () => {
+    const result = validateCandidate({
+      validationId: "validation-composite-preserve",
+      candidate: candidate({
+        type: "composite",
+        changes: [
+          {
+            type: "local_text",
+            sceneId: "scene-1",
+            targetSpan: {
+              anchorId: "span-2",
+              text: "The Northern Sect gate stayed closed.",
+              sourceContentHash: hashContent("The Northern Sect gate stayed closed."),
+            },
+            replacement: "The gate opened slowly.",
+          },
+          {
+            type: "structured_state",
+            stateRecordId: "state-1",
+            content: { condition: "injured" },
+          },
+        ],
+      }),
+      scene: scene(),
+      mustPreserve: ["Lin Chuan waited."],
+      createdAt: now,
+    });
+
+    expect(result.run.outcome).toBe("pass");
+  });
+
+  it("rejects empty structured target ids", () => {
+    const stateResult = validateCandidate({
+      validationId: "validation-empty-state-id",
+      candidate: candidate({
+        type: "structured_state",
+        stateRecordId: "",
+        content: { condition: "injured" },
+      }),
+      scene: scene(),
+      mustPreserve: [],
+      createdAt: now,
+    });
+    const factResult = validateCandidate({
+      validationId: "validation-empty-fact-id",
+      candidate: candidate({
+        type: "canonical_fact",
+        canonicalFactId: "",
+        content: { rule: "New rule" },
+      }),
+      scene: scene(),
+      mustPreserve: [],
+      createdAt: now,
+    });
+
+    expect(stateResult.run.findings[0]?.code).toBe("EMPTY_STRUCTURED_TARGET_ID");
+    expect(factResult.run.findings[0]?.code).toBe("EMPTY_STRUCTURED_TARGET_ID");
+  });
+
+  it("distinguishes target validation failures", () => {
+    const missingAnchor = validateCandidate({
+      validationId: "validation-missing-anchor",
+      candidate: candidate({
+        type: "local_text",
+        sceneId: "scene-1",
+        targetSpan: {
+          anchorId: "missing",
+          text: "Missing.",
+          sourceContentHash: hashContent("Missing."),
+        },
+        replacement: "Replacement.",
+      }),
+      scene: scene(),
+      mustPreserve: [],
+      createdAt: now,
+    });
+    const hashMismatch = validateCandidate({
+      validationId: "validation-hash-mismatch",
+      candidate: candidate({
+        type: "local_text",
+        sceneId: "scene-1",
+        targetSpan: {
+          anchorId: "span-2",
+          text: "The Northern Sect gate stayed closed.",
+          sourceContentHash: hashContent("Wrong text"),
+        },
+        replacement: "Replacement.",
+      }),
+      scene: scene(),
+      mustPreserve: [],
+      createdAt: now,
+    });
+    const ambiguousScene = {
+      ...scene(),
+      text: "Repeated. Repeated.",
+      spanAnchors: { "span-duplicate": "Repeated." },
+    } as Scene;
+    const ambiguous = validateCandidate({
+      validationId: "validation-ambiguous",
+      candidate: candidate({
+        type: "local_text",
+        sceneId: "scene-1",
+        targetSpan: {
+          anchorId: "span-duplicate",
+          text: "Repeated.",
+          sourceContentHash: hashContent("Repeated."),
+        },
+        replacement: "Replacement.",
+      }),
+      scene: ambiguousScene,
+      mustPreserve: [],
+      createdAt: now,
+    });
+
+    expect(missingAnchor.run.findings[0]?.code).toBe("TARGET_ANCHOR_NOT_FOUND");
+    expect(hashMismatch.run.findings[0]?.code).toBe("TARGET_SOURCE_HASH_MISMATCH");
+    expect(ambiguous.run.findings[0]?.code).toBe("TARGET_SPAN_AMBIGUOUS");
+  });
+
+  it("rejects duplicate composite targets", () => {
+    const result = validateCandidate({
+      validationId: "validation-duplicate-target",
+      candidate: candidate({
+        type: "composite",
+        changes: [
+          { type: "text", sceneId: "scene-1", text: "First" },
+          { type: "text", sceneId: "scene-1", text: "Second" },
+        ],
+      }),
+      scene: scene(),
+      mustPreserve: [],
+      createdAt: now,
+    });
+
+    expect(result.run.findings.some((finding) => finding.code === "DUPLICATE_CANDIDATE_TARGET")).toBe(
+      true,
+    );
+    expect(result.outcome).toBe("fail");
   });
 });
