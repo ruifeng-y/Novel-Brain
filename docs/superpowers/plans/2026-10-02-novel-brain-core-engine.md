@@ -3886,6 +3886,7 @@ Expected: FAIL because the validator module does not exist.
 
 ```ts
 import type { Candidate } from "../domain/candidate";
+import type { CandidateAtomicChange } from "../domain/candidate";
 import type { Scene } from "../../manuscript/domain/scene";
 import { resolveTargetSpan } from "../../manuscript/domain/targetSpan";
 import {
@@ -3906,6 +3907,8 @@ export interface ValidationResult {
   readonly run: ReturnType<typeof createValidationRun>;
   readonly outcome: ValidationOutcome;
 }
+
+The implementation validates each atomic change recursively for composite candidates, rejects scene mismatches and empty structured changes, validates target spans, and combines proposed text for `mustPreserve` checks.
 
 export function validateCandidate(request: ValidationRequest): ValidationResult {
   const findings: ValidationFinding[] = [];
@@ -3992,7 +3995,7 @@ export function validateCandidate(request: ValidationRequest): ValidationResult 
 
 Run: `npm test -- --run tests/production/basicValidator.test.ts`
 
-Expected: PASS with 3 validator tests.
+Expected: PASS with 4 validator tests.
 
 - [ ] **Step 5: Commit**
 
