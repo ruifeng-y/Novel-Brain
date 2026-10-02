@@ -1,0 +1,55 @@
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+model CurrentObject {
+  id            String   @id @default(cuid())
+  aggregateType String
+  objectId      String
+  novelId       String
+  revisionId    String?
+  payload       Json
+  createdAt     DateTime @default(now())
+  updatedAt     DateTime @updatedAt
+
+  @@unique([aggregateType, objectId])
+  @@index([aggregateType, objectId])
+  @@index([novelId])
+}
+
+model RevisionRecord {
+  id            String   @id @default(cuid())
+  aggregateType String
+  objectId      String
+  novelId       String
+  revisionId    String
+  commitId      String?
+  payload       Json
+  createdAt     DateTime @default(now())
+
+  @@unique([aggregateType, objectId, revisionId])
+  @@index([aggregateType, objectId])
+  @@index([novelId])
+}
+
+model DomainEvent {
+  sequence   BigInt   @id @default(autoincrement())
+  eventId    String   @unique
+  name       String
+  context    String
+  novelId    String
+  objectId   String
+  revisionId String
+  commitId   String?
+  payload    Json
+  occurredAt DateTime
+  createdAt  DateTime @default(now())
+
+  @@index([novelId])
+  @@index([context, name])
+}

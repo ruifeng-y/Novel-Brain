@@ -14,7 +14,9 @@
     "vitest": "latest"
   },
   "dependencies": {
+    "@prisma/client": "^6.19.3",
     "fastify": "^5.12.5",
+    "prisma": "^6.19.3",
     "zod": "^4.6.5"
   }
 }

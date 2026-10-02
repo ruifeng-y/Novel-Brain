@@ -71,6 +71,7 @@ vitest.config.ts
 docker-compose.yml
 prisma/
   schema.prisma
+  migrations/
 src/
   shared/
     domain/
@@ -4506,6 +4507,8 @@ git commit -m "feat: add core engine http api"
 ---
 
 ### Task 18: PostgreSQL Persistence Mapping
+
+Prisma repositories serialize domain payloads as JSON at the infrastructure boundary. Revision repositories use a transaction and reject conflicting reuse of an existing revision ID.
 
 **Files:**
 
