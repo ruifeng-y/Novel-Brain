@@ -8,6 +8,7 @@ export interface Identified {
   readonly novelId?: string;
 }
 
+/** A missing novelId means the object itself is the novel identity. */
 export interface Repository<T extends Identified> {
   save(entity: T): Promise<void>;
   findById(id: string): Promise<T | undefined>;
