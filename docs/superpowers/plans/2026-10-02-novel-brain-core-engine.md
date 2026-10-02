@@ -5235,6 +5235,7 @@ npm install
 npm run typecheck
 npm test -- --run
 docker compose up -d postgres
+export DATABASE_URL=postgresql://novelbrain:novelbrain@localhost:5434/novelbrain?schema=public
 npx prisma migrate dev
 npm run test:integration -- --run
 ```
