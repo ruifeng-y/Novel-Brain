@@ -1556,6 +1556,7 @@ describe("Candidate", () => {
     });
     expect(original.currentRevisionId).toBe("candidate-1-rev-1");
     expect(edited.currentRevisionId).toBe("candidate-rev-2");
+    if (edited.change.type !== "text") throw new Error("Expected a text candidate");
     expect(edited.change.text).toBe("Edited text");
   });
 
