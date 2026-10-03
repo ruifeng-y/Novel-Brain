@@ -1,6 +1,6 @@
-import type { DomainId } from "../../shared/domain/ids";
+import type { DomainId, RevisionId } from "../../shared/domain/ids";
 import type { VersionSet } from "../../shared/domain/versioning";
-import type { Candidate } from "../../production/domain/candidate";
+import type { ChangeSetRevision } from "../../production/domain/changeSetRevision";
 import type { ValidationRun } from "../../production/domain/validationRun";
 import type { ReviewDecision } from "../../production/domain/reviewDecision";
 
@@ -9,10 +9,9 @@ export type NarrativeCommitStatus = "pending" | "committed" | "stale" | "failed"
 export interface NarrativeCommit {
   readonly id: DomainId;
   readonly novelId: DomainId;
-  readonly candidateId: DomainId;
-  readonly candidateRevisionId: string;
+  readonly changeSetRevisionId: RevisionId;
   readonly validationRunIds: readonly DomainId[];
-  readonly reviewDecisionId: DomainId;
+  readonly reviewDecisionIds: readonly DomainId[];
   readonly basedOnVersionSet: VersionSet;
   readonly resultingVersionSet?: VersionSet;
   readonly status: NarrativeCommitStatus;
@@ -24,44 +23,44 @@ export interface NarrativeCommit {
 export function createNarrativeCommit(input: {
   id: DomainId;
   novelId: DomainId;
-  candidate: Candidate;
+  changeSetRevision: ChangeSetRevision;
   validationRuns: readonly ValidationRun[];
-  reviewDecision: ReviewDecision;
+  reviewDecisions: readonly ReviewDecision[];
+  basedOnVersionSet?: VersionSet;
   createdAt: Date;
 }): NarrativeCommit {
   if (!input.id) throw new Error("id is required");
   if (!input.novelId) throw new Error("novelId is required");
-  if (input.candidate.novelId !== input.novelId) throw new Error("Candidate novel does not match commit novel");
+  if (input.changeSetRevision.novelId !== input.novelId) {
+    throw new Error("Change set revision novel does not match commit novel");
+  }
   if (input.validationRuns.length === 0) throw new Error("At least one validation run is required");
 
-  const hasFailedValidation = input.validationRuns.some((run) => run.outcome === "fail");
-  if (hasFailedValidation) throw new Error("A failed validation cannot be committed");
-
   for (const run of input.validationRuns) {
-    if (run.candidateId !== input.candidate.id) throw new Error("Validation run does not match candidate");
-    if (run.candidateRevisionId !== input.candidate.currentRevisionId) {
-      throw new Error("Validation run does not match candidate revision");
+    if (run.changeSetRevisionId !== input.changeSetRevision.revisionId) {
+      throw new Error("Validation run does not match change set revision");
     }
   }
+  if (input.validationRuns.some(run => run.outcome === "fail")) {
+    throw new Error("A failed validation cannot be committed");
+  }
 
-  if (input.reviewDecision.candidateId !== input.candidate.id) {
-    throw new Error("Review decision does not match candidate");
+  for (const decision of input.reviewDecisions) {
+    if (decision.changeSetRevisionId !== input.changeSetRevision.revisionId) {
+      throw new Error("Review decision does not match change set revision");
+    }
   }
-  if (input.reviewDecision.candidateRevisionId !== input.candidate.currentRevisionId) {
-    throw new Error("Review decision does not match candidate revision");
-  }
-  if (input.reviewDecision.decision !== "approve") {
-    throw new Error("Only an approved candidate can be committed");
+  if (!input.reviewDecisions.some(decision => decision.decision === "approve")) {
+    throw new Error("At least one approving review decision is required");
   }
 
   return Object.freeze({
     id: input.id,
     novelId: input.novelId,
-    candidateId: input.candidate.id,
-    candidateRevisionId: input.candidate.currentRevisionId,
-    validationRunIds: Object.freeze(input.validationRuns.map((run) => run.id)),
-    reviewDecisionId: input.reviewDecision.id,
-    basedOnVersionSet: input.candidate.basedOnVersionSet,
+    changeSetRevisionId: input.changeSetRevision.revisionId,
+    validationRunIds: Object.freeze(input.validationRuns.map(run => run.id)),
+    reviewDecisionIds: Object.freeze(input.reviewDecisions.map(decision => decision.id)),
+    basedOnVersionSet: input.basedOnVersionSet ?? Object.freeze({}),
     status: "pending",
     createdAt: input.createdAt,
     updatedAt: input.createdAt,
