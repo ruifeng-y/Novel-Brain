@@ -30,7 +30,6 @@ export interface GenerationTask {
   readonly targetSceneId: DomainId;
   readonly intent: string;
   readonly basedOnVersionSet: VersionSet;
-  readonly candidateIds: readonly DomainId[];
   readonly status: GenerationTaskStatus;
   readonly createdAt: Date;
   readonly updatedAt: Date;
@@ -70,7 +69,6 @@ export function createGenerationTask(input: {
     targetSceneId: input.targetSceneId,
     intent: input.intent.trim(),
     basedOnVersionSet: input.basedOnVersionSet,
-    candidateIds: Object.freeze([]),
     status: "draft",
     createdAt: input.createdAt,
     updatedAt: input.createdAt,
@@ -83,16 +81,6 @@ export function startGenerationTask(task: GenerationTask, updatedAt: Date): Gene
   return Object.freeze({ ...task, status: "running", updatedAt });
 }
 
-export function addCandidateReference(task: GenerationTask, candidateId: DomainId): GenerationTask {
-  if (!candidateId) throw new Error("candidateId is required");
-  if (isTerminalTaskStatus(task.status)) throw new Error("Terminal task cannot add candidates");
-  if (task.candidateIds.includes(candidateId)) return task;
-  return Object.freeze({
-    ...task,
-    candidateIds: Object.freeze([...task.candidateIds, candidateId]),
-  });
-}
-
 export function completeGenerationTask(input: {
   task: GenerationTask;
   candidateIds: readonly DomainId[];
@@ -102,15 +90,9 @@ export function completeGenerationTask(input: {
     throw new Error("GenerationTask requires at least one candidate to complete");
   }
   if (input.task.status !== "running") throw new Error("Only a running task can complete");
-  for (const candidateId of input.candidateIds) {
-    if (!input.task.candidateIds.includes(candidateId)) {
-      throw new Error(`Candidate reference is not associated with task: ${candidateId}`);
-    }
-  }
   if (input.updatedAt < input.task.updatedAt) throw new Error("updatedAt cannot move backward");
   return Object.freeze({
     ...input.task,
-    candidateIds: Object.freeze([...new Set(input.candidateIds)]),
     status: "completed",
     updatedAt: input.updatedAt,
   });

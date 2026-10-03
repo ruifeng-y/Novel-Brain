@@ -35,7 +35,7 @@ function server() {
 
 describe("core engine API", () => {
   it("supports the co-creation loop over HTTP", async () => {
-    const { app } = server();
+    const { app, dependencies } = server();
     const novelResponse = await app.inject({
       method: "POST",
       url: "/novels",
@@ -83,6 +83,13 @@ describe("core engine API", () => {
       },
     });
     expect(candidateResponse.statusCode).toBe(201);
+
+    const savedTask = await dependencies.generationTasks.findById("task-1");
+    const savedCandidate = await dependencies.candidates.findById("candidate-1");
+    expect(savedTask?.id).toBe("task-1");
+    expect(savedTask && Object.prototype.hasOwnProperty.call(savedTask, "candidateIds")).toBe(false);
+    expect(savedCandidate?.id).toBe("candidate-1");
+    expect(savedCandidate?.taskId).toBe(savedTask?.id);
 
     const commitResponse = await app.inject({
       method: "POST",

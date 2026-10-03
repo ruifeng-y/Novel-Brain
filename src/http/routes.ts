@@ -8,7 +8,6 @@ import type { Scene } from "../manuscript/domain/scene";
 import { createScene } from "../manuscript/domain/scene";
 import type { GenerationTask } from "../production/domain/generationTask";
 import {
-  addCandidateReference,
   createGenerationTask,
   startGenerationTask,
 } from "../production/domain/generationTask";
@@ -231,7 +230,7 @@ export function registerNovelBrainRoutes(app: FastifyInstance, dependencies: Api
       change: runtimeResult.change,
       createdAt: new Date(),
     });
-    const updatedTask = addCandidateReference(startedTask, candidate.id);
+    const updatedTask = startedTask;
     await dependencies.generationTasks.save(updatedTask);
     await dependencies.candidates.save(candidate);
     return reply.code(201).send(candidate);
