@@ -19,6 +19,7 @@ import {
   isCommitConflictError,
 } from "../shared/application/commitConflict";
 import { deepFreeze } from "../shared/domain/immutable";
+import { WriteTransactionCoordinator } from "../shared/infrastructure/writeTransactionCoordinator";
 import type { Scene } from "../manuscript/domain/scene";
 import type { CanonicalFact } from "../narrative/canon/domain/canonicalFact";
 import type { StateRecord } from "../narrative/state/domain/stateRecord";
@@ -94,47 +95,6 @@ function normalizeConflict(error: unknown): unknown {
     return new CommitConflictError("revision_history", error.message);
   }
   return error;
-}
-
-class WriteTransactionCoordinator {
-  private readonly transactionContext = new AsyncLocalStorage<true>();
-  private tail: Promise<void> = Promise.resolve();
-
-  isInTransaction(): boolean {
-    return this.transactionContext.getStore() === true;
-  }
-
-  runContext<T>(operation: () => Promise<T>): Promise<T> {
-    return this.transactionContext.run(true, operation);
-  }
-
-  runExclusive<T>(operation: () => Promise<T>): Promise<T> {
-    const result = this.tail.then(operation);
-    this.tail = result.then(
-      () => undefined,
-      () => undefined,
-    );
-    return result;
-  }
-
-  runExternalWrite<T>(operation: () => Promise<T>): Promise<T> {
-    if (this.isInTransaction()) {
-      return Promise.reject(
-        new CommitConflictError(
-          "raw_write_in_transaction",
-          "External write cannot bypass the active commit transaction",
-        ),
-      );
-    }
-    return this.runExclusive(operation).catch(error => {
-      throw normalizeConflict(error);
-    });
-  }
-
-  runExternalRead<T>(operation: () => Promise<T>): Promise<T> {
-    if (this.isInTransaction()) return operation();
-    return this.runExclusive(operation);
-  }
 }
 
 interface RevisionedStoreSnapshot<T> {
@@ -424,7 +384,7 @@ class SerializedEventStore implements EventStore {
  * Transaction work reaches the stores through private CAS/unique-only ports.
  */
 export class InMemoryCommitTransaction implements CommitChangeSetRevisionTransaction {
-  private readonly coordinator = new WriteTransactionCoordinator();
+  private readonly coordinator = new WriteTransactionCoordinator(normalizeConflict);
   private readonly sceneStore = new InMemoryCommitRevisionedStore<Scene>();
   private readonly canonicalFactStore = new InMemoryCommitRevisionedStore<CanonicalFact>();
   private readonly stateRecordStore = new InMemoryCommitRevisionedStore<StateRecord>();
