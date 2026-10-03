@@ -4,14 +4,20 @@ import {
   replaceTargetSpan,
   resolveTargetSpan,
 } from "../../manuscript/domain/targetSpan";
+import { hashContent } from "../../shared/domain/contentHash";
+import type { RevisionId } from "../../shared/domain/ids";
 import {
   createValidationRun,
+  type ValidationEvidence,
+  type ValidationEntryResult,
   type ValidationFinding,
   type ValidationOutcome,
 } from "../domain/validationRun";
 
 export interface ValidationRequest {
   readonly validationId: string;
+  readonly changeSetRevisionId: RevisionId;
+  readonly planVersionId: string;
   readonly candidate: Candidate;
   readonly scene?: Scene;
   readonly mustPreserve: readonly string[];
@@ -37,18 +43,37 @@ function targetKey(change: CandidateAtomicChange): string {
   return `StateRecord:${change.stateRecordId}`;
 }
 
+function toEvidence(
+  code: string,
+  details: Readonly<Record<string, unknown>>,
+): readonly ValidationEvidence[] {
+  const observation = JSON.stringify(details);
+  return Object.freeze([
+    Object.freeze({
+      id: `${code}:detail`,
+      type: "validation_detail",
+      sourceReference: Object.freeze({
+        identity: code,
+        version: "1",
+        hash: hashContent(observation),
+      }),
+      observation,
+    }),
+  ]);
+}
+
 function addFinding(
   findings: ValidationFinding[],
   code: string,
   message: string,
-  evidence: Readonly<Record<string, unknown>>,
+  details: Readonly<Record<string, unknown>>,
 ): void {
   findings.push({
     code,
     severity: "error",
     confidence: 1,
     message,
-    evidence,
+    evidence: toEvidence(code, details),
   });
 }
 
@@ -206,13 +231,24 @@ export function validateCandidate(request: ValidationRequest): ValidationResult 
     ? "fail"
     : "pass";
 
+  const entryResults: readonly ValidationEntryResult[] = Object.freeze([
+    Object.freeze({
+      entryReference: "basic-candidate-validation",
+      executionMode: "full_reexecution" as const,
+      verdict: outcome,
+      findings: Object.freeze(findings),
+      evidence: Object.freeze([]),
+    }),
+  ]);
+
   const run = createValidationRun({
     id: request.validationId,
-    candidateId: request.candidate.id,
-    candidateRevisionId: request.candidate.currentRevisionId,
+    changeSetRevisionId: request.changeSetRevisionId,
+    planVersionId: request.planVersionId,
     validatorId: "basic-candidate-validator",
+    entryResults,
+    executionState: "completed",
     outcome,
-    findings,
     createdAt: request.createdAt,
   });
 

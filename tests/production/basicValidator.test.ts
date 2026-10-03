@@ -52,6 +52,8 @@ describe("basic validator", () => {
   it("passes a non-empty text candidate", () => {
     const result = validateCandidate({
       validationId: "validation-1",
+      changeSetRevisionId: "cs-1-r1",
+      planVersionId: "plan-1",
       candidate: candidate({ type: "text", sceneId: "scene-1", text: "New text" }),
       scene: scene(),
       mustPreserve: [],
@@ -64,6 +66,8 @@ describe("basic validator", () => {
   it("fails when a required phrase is missing", () => {
     const result = validateCandidate({
       validationId: "validation-1",
+      changeSetRevisionId: "cs-1-r1",
+      planVersionId: "plan-1",
       candidate: candidate({ type: "text", sceneId: "scene-1", text: "Different text" }),
       scene: scene(),
       mustPreserve: ["Northern Sect"],
@@ -71,7 +75,7 @@ describe("basic validator", () => {
     });
 
     expect(result.run.outcome).toBe("fail");
-    expect(result.run.findings[0]).toMatchObject({
+    expect(result.run.entryResults[0]?.findings[0]).toMatchObject({
       code: "REQUIRED_PHRASE_MISSING",
       severity: "error",
     });
@@ -82,6 +86,8 @@ describe("basic validator", () => {
     const targetText = "The Northern Sect gate stayed closed.";
     const result = validateCandidate({
       validationId: "validation-1",
+      changeSetRevisionId: "cs-1-r1",
+      planVersionId: "plan-1",
       candidate: candidate({
         type: "local_text",
         sceneId: "scene-1",
@@ -103,6 +109,8 @@ describe("basic validator", () => {
   it("checks must-preserve phrases against the resulting local scene text", () => {
     const result = validateCandidate({
       validationId: "validation-local-preserve",
+      changeSetRevisionId: "cs-1-r1",
+      planVersionId: "plan-1",
       candidate: candidate({
         type: "local_text",
         sceneId: "scene-1",
@@ -124,6 +132,8 @@ describe("basic validator", () => {
   it("validates every atomic change in a composite candidate", () => {
     const result = validateCandidate({
       validationId: "validation-composite",
+      changeSetRevisionId: "cs-1-r1",
+      planVersionId: "plan-1",
       candidate: candidate({
         type: "composite",
         changes: [
@@ -146,6 +156,8 @@ describe("basic validator", () => {
   it("checks must-preserve phrases against composite resulting scene text", () => {
     const result = validateCandidate({
       validationId: "validation-composite-preserve",
+      changeSetRevisionId: "cs-1-r1",
+      planVersionId: "plan-1",
       candidate: candidate({
         type: "composite",
         changes: [
@@ -174,9 +186,11 @@ describe("basic validator", () => {
     expect(result.run.outcome).toBe("pass");
   });
 
-  it("rejects empty structured target ids", () => {
-    const stateResult = validateCandidate({
+  it("rejects an empty structured state target id", () => {
+    const result = validateCandidate({
       validationId: "validation-empty-state-id",
+      changeSetRevisionId: "cs-1-r1",
+      planVersionId: "plan-1",
       candidate: candidate({
         type: "structured_state",
         stateRecordId: "",
@@ -186,8 +200,15 @@ describe("basic validator", () => {
       mustPreserve: [],
       createdAt: now,
     });
-    const factResult = validateCandidate({
+
+    expect(result.run.entryResults[0]?.findings[0]?.code).toBe("EMPTY_STRUCTURED_TARGET_ID");
+  });
+
+  it("rejects an empty structured fact target id", () => {
+    const result = validateCandidate({
       validationId: "validation-empty-fact-id",
+      changeSetRevisionId: "cs-1-r1",
+      planVersionId: "plan-1",
       candidate: candidate({
         type: "canonical_fact",
         canonicalFactId: "",
@@ -198,13 +219,14 @@ describe("basic validator", () => {
       createdAt: now,
     });
 
-    expect(stateResult.run.findings[0]?.code).toBe("EMPTY_STRUCTURED_TARGET_ID");
-    expect(factResult.run.findings[0]?.code).toBe("EMPTY_STRUCTURED_TARGET_ID");
+    expect(result.run.entryResults[0]?.findings[0]?.code).toBe("EMPTY_STRUCTURED_TARGET_ID");
   });
 
-  it("distinguishes target validation failures", () => {
-    const missingAnchor = validateCandidate({
+  it("reports a missing target anchor", () => {
+    const result = validateCandidate({
       validationId: "validation-missing-anchor",
+      changeSetRevisionId: "cs-1-r1",
+      planVersionId: "plan-1",
       candidate: candidate({
         type: "local_text",
         sceneId: "scene-1",
@@ -219,8 +241,15 @@ describe("basic validator", () => {
       mustPreserve: [],
       createdAt: now,
     });
-    const hashMismatch = validateCandidate({
+
+    expect(result.run.entryResults[0]?.findings[0]?.code).toBe("TARGET_ANCHOR_NOT_FOUND");
+  });
+
+  it("reports a target source hash mismatch", () => {
+    const result = validateCandidate({
       validationId: "validation-hash-mismatch",
+      changeSetRevisionId: "cs-1-r1",
+      planVersionId: "plan-1",
       candidate: candidate({
         type: "local_text",
         sceneId: "scene-1",
@@ -235,8 +264,15 @@ describe("basic validator", () => {
       mustPreserve: [],
       createdAt: now,
     });
-    const textMismatch = validateCandidate({
+
+    expect(result.run.entryResults[0]?.findings[0]?.code).toBe("TARGET_SOURCE_HASH_MISMATCH");
+  });
+
+  it("reports a target text mismatch", () => {
+    const result = validateCandidate({
       validationId: "validation-text-mismatch",
+      changeSetRevisionId: "cs-1-r1",
+      planVersionId: "plan-1",
       candidate: candidate({
         type: "local_text",
         sceneId: "scene-1",
@@ -252,14 +288,14 @@ describe("basic validator", () => {
       createdAt: now,
     });
 
-    expect(missingAnchor.run.findings[0]?.code).toBe("TARGET_ANCHOR_NOT_FOUND");
-    expect(hashMismatch.run.findings[0]?.code).toBe("TARGET_SOURCE_HASH_MISMATCH");
-    expect(textMismatch.run.findings[0]?.code).toBe("TARGET_TEXT_MISMATCH");
+    expect(result.run.entryResults[0]?.findings[0]?.code).toBe("TARGET_TEXT_MISMATCH");
   });
 
   it("rejects duplicate composite targets", () => {
     const result = validateCandidate({
       validationId: "validation-duplicate-target",
+      changeSetRevisionId: "cs-1-r1",
+      planVersionId: "plan-1",
       candidate: candidate({
         type: "composite",
         changes: [
@@ -272,9 +308,29 @@ describe("basic validator", () => {
       createdAt: now,
     });
 
-    expect(result.run.findings.some((finding) => finding.code === "DUPLICATE_CANDIDATE_TARGET")).toBe(
-      true,
-    );
+    expect(
+      result.run.entryResults[0]?.findings.some(
+        (finding) => finding.code === "DUPLICATE_CANDIDATE_TARGET",
+      ),
+    ).toBe(true);
     expect(result.outcome).toBe("fail");
+  });
+
+  it("binds the validation run to the change set revision and frozen plan version", () => {
+    const result = validateCandidate({
+      validationId: "validation-binding",
+      changeSetRevisionId: "cs-1-r1",
+      planVersionId: "plan-1",
+      candidate: candidate({ type: "text", sceneId: "scene-1", text: "New text" }),
+      scene: scene(),
+      mustPreserve: [],
+      createdAt: now,
+    });
+
+    expect(result.run.changeSetRevisionId).toBe("cs-1-r1");
+    expect(result.run.planVersionId).toBe("plan-1");
+    expect("candidateId" in result.run).toBe(false);
+    expect("candidateRevisionId" in result.run).toBe(false);
+    expect(result.run.entryResults[0]?.entryReference).toBe("basic-candidate-validation");
   });
 });
