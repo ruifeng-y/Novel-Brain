@@ -74,6 +74,10 @@ src/safety/domain/narrativeCommit.ts
 src/production/domain/candidate.ts
   Candidate { id, taskId, novelId, change, basedOnVersionSet,
               currentRevisionId, status, rejectionReason?, createdAt, updatedAt }
+
+src/production/application/validateCandidate.ts
+  calls createValidationRun with candidateId / candidateRevisionId
+  (legacy Candidate-bound ValidationRun caller; produces the basic validator run)
 ```
 
 Legacy path currently in force:
@@ -147,6 +151,9 @@ src/production/domain/
   reviewDecision.ts                  MOD  re-bind to Change Set Revision
   candidate.ts                       KEEP unchanged
 
+src/production/application/
+  validateCandidate.ts               MOD  re-bind its ValidationRun to Change Set Revision + frozen plan version
+
 src/safety/domain/
   narrativeCommit.ts                 MOD  re-bind to Change Set Revision
   commitGate.ts                      NEW  five-gate evaluation
@@ -164,6 +171,7 @@ tests/production/
   generationTask.test.ts             MOD
   validationRun.test.ts              MOD
   reviewDecision.test.ts             MOD
+  basicValidator.test.ts             MOD
 
 tests/safety/
   narrativeCommit.test.ts            MOD
@@ -221,6 +229,7 @@ Rewrite  tests/production/generationTask.test.ts   -> completion invariant via t
 Rewrite  tests/production/validationRun.test.ts    -> Change Set Revision + plan version binding
 Rewrite  tests/production/reviewDecision.test.ts   -> Change Set Revision + approval scope binding
 Rewrite  tests/safety/narrativeCommit.test.ts      -> Change Set Revision binding
+Rebind   tests/production/basicValidator.test.ts   -> basic validator produces a Change Set Revision-bound ValidationRun (12 existing cases kept, binding case added)
 Update   tests/app/coCreationLoop.test.ts          -> build Change Set Revision before commit
 Update   tests/http/api.test.ts                    -> commit endpoint commits a Change Set Revision
 Keep     tests/production/candidate.test.ts        -> Candidate semantics unchanged
@@ -240,6 +249,7 @@ Revision Trigger: preconditions evaluated against status facts, not headline sta
 Revision Projection: headline priority Committed > Invalid > Stale > Approved > Validated/Failed > Submitted > Ready > Assembling
 GenerationTask: no candidateIds state; completion requires transient candidate input
 ValidationRun: Change Set Revision binding; outcome only when Completed; interrupted keeps partial evidence
+Legacy validator caller: validateCandidate binds its ValidationRun to Change Set Revision + frozen plan version; Candidate stays context only; existing target-span / required-phrase behaviour preserved
 ReviewDecision: Change Set Revision + Approval Scope binding; policy decisions require policy version and rule
 NarrativeCommit: Change Set Revision binding; rejects mismatched revision
 Commit Gate: all five gates evaluated, all blockers reported, no fail-fast
@@ -278,6 +288,9 @@ Mitigation  Revisions are created only by explicit factory functions and are fro
 
 Risk  Two semantic systems could coexist during migration.
 Mitigation  Each re-binding task removes the legacy fields in the same commit.
+
+Risk  The legacy basic validator could keep producing a Candidate-bound ValidationRun.
+Mitigation  Task 8 migrates src/production/application/validateCandidate.ts in the same commit as the ValidationRun re-binding, keeps the capability and its 12 tests, and adds a binding case; nothing is deleted.
 ```
 
 Rollback: every task is a single commit; reverting the offending commit restores the previous green state. No database migration is involved in this plan.
@@ -1602,10 +1615,13 @@ git commit -m "refactor: remove generation task candidate id state"
 **Files:**
 - Modify: `src/production/domain/validationRun.ts`
 - Modify: `tests/production/validationRun.test.ts`
+- Modify: `src/production/application/validateCandidate.ts`
+- Modify: `tests/production/basicValidator.test.ts`
 
 **Interfaces:**
 - Consumes: `DomainId`, `RevisionId`.
 - Produces: `ValidationExecutionMode`, `ValidationVerdict`, `ValidationExecutionState`, `ValidationEvidence`, `ValidationFinding`, `ValidationEntryResult`, `ValidationRun`, `createValidationRun`, `summarizeValidationOutcome`.
+- Migrates: `validateCandidate` binds its `ValidationRun` to `changeSetRevisionId` + `planVersionId`. `Candidate` stays Source / Context only and is no longer a Validation Target. The existing basic target-span / required-phrase validation capability and all 12 validator tests are preserved.
 
 - [ ] **Step 1: Rewrite the failing test**
 
@@ -1888,10 +1904,315 @@ export function summarizeValidationOutcome(
 Run: `npm test -- --run tests/production/validationRun.test.ts`
 Expected: PASS with 7 tests.
 
-- [ ] **Step 5: Commit**
+- [ ] **Step 5: Migrate the legacy Candidate-bound validator caller**
+
+`src/production/application/validateCandidate.ts` still calls `createValidationRun` with `candidateId` / `candidateRevisionId`, and builds `ValidationFinding.evidence` as a raw record. This is the last Candidate-bound `ValidationRun` producer. Migrate it so the produced run binds to the Change Set Revision and the frozen plan version. Keep every existing validation behaviour: target-span checks, required-phrase checks, duplicate-target checks, structured-target checks.
+
+Replace the whole file with:
+
+```ts
+import type { Candidate, CandidateAtomicChange } from "../domain/candidate";
+import type { Scene } from "../../manuscript/domain/scene";
+import {
+  replaceTargetSpan,
+  resolveTargetSpan,
+} from "../../manuscript/domain/targetSpan";
+import { hashContent } from "../../shared/domain/contentHash";
+import type { RevisionId } from "../../shared/domain/ids";
+import {
+  createValidationRun,
+  type ValidationEvidence,
+  type ValidationEntryResult,
+  type ValidationFinding,
+  type ValidationOutcome,
+} from "../domain/validationRun";
+
+export interface ValidationRequest {
+  readonly validationId: string;
+  readonly changeSetRevisionId: RevisionId;
+  readonly planVersionId: string;
+  readonly candidate: Candidate;
+  readonly scene?: Scene;
+  readonly mustPreserve: readonly string[];
+  readonly createdAt: Date;
+}
+
+export interface ValidationResult {
+  readonly run: ReturnType<typeof createValidationRun>;
+  readonly outcome: ValidationOutcome;
+}
+
+function atomicChanges(change: Candidate["change"]): readonly CandidateAtomicChange[] {
+  return change.type === "composite" ? change.changes : [change];
+}
+
+function targetKey(change: CandidateAtomicChange): string {
+  if (change.type === "text" || change.type === "local_text") {
+    return `Scene:${change.sceneId}`;
+  }
+  if (change.type === "canonical_fact") {
+    return `CanonicalFact:${change.canonicalFactId}`;
+  }
+  return `StateRecord:${change.stateRecordId}`;
+}
+
+function toEvidence(
+  code: string,
+  details: Readonly<Record<string, unknown>>,
+): readonly ValidationEvidence[] {
+  const observation = JSON.stringify(details);
+  return Object.freeze([
+    Object.freeze({
+      id: `${code}:detail`,
+      type: "validation_detail",
+      sourceReference: Object.freeze({
+        identity: code,
+        version: "1",
+        hash: hashContent(observation),
+      }),
+      observation,
+    }),
+  ]);
+}
+
+function addFinding(
+  findings: ValidationFinding[],
+  code: string,
+  message: string,
+  details: Readonly<Record<string, unknown>>,
+): void {
+  findings.push({
+    code,
+    severity: "error",
+    confidence: 1,
+    message,
+    evidence: toEvidence(code, details),
+  });
+}
+
+function targetSpanErrorCode(error: unknown): string {
+  const message = error instanceof Error ? error.message : "";
+  if (message.includes("anchor not found")) return "TARGET_ANCHOR_NOT_FOUND";
+  if (message.includes("text does not match")) return "TARGET_TEXT_MISMATCH";
+  if (message.includes("source hash does not match")) return "TARGET_SOURCE_HASH_MISMATCH";
+  if (message.includes("ambiguous")) return "TARGET_SPAN_AMBIGUOUS";
+  if (message.includes("not present")) return "TARGET_TEXT_NOT_FOUND";
+  return "TARGET_SPAN_INVALID";
+}
+
+function validateAtomicChange(
+  change: CandidateAtomicChange,
+  scene: Scene | undefined,
+  findings: ValidationFinding[],
+): void {
+  if (change.type === "text") {
+    if (!scene) {
+      addFinding(findings, "SCENE_REQUIRED", "Text change requires a scene.", {
+        sceneId: change.sceneId,
+      });
+    } else if (change.sceneId !== scene.id) {
+      addFinding(
+        findings,
+        "SCENE_MISMATCH",
+        "Text change targets a different scene.",
+        { expectedSceneId: scene.id, actualSceneId: change.sceneId },
+      );
+    }
+    if (!change.text.trim()) {
+      addFinding(findings, "EMPTY_TEXT", "Text candidate cannot be empty.", {
+        sceneId: change.sceneId,
+      });
+    }
+    return;
+  }
+
+  if (change.type === "local_text") {
+    if (!scene) {
+      addFinding(findings, "SCENE_REQUIRED", "Local text change requires a scene.", {
+        sceneId: change.sceneId,
+      });
+      return;
+    }
+    if (change.sceneId !== scene.id) {
+      addFinding(
+        findings,
+        "SCENE_MISMATCH",
+        "Local text change targets a different scene.",
+        { expectedSceneId: scene.id, actualSceneId: change.sceneId },
+      );
+      return;
+    }
+    try {
+      resolveTargetSpan(scene, change.targetSpan);
+    } catch (error) {
+      addFinding(
+        findings,
+        targetSpanErrorCode(error),
+        error instanceof Error ? error.message : "Target span is invalid.",
+        { anchorId: change.targetSpan.anchorId },
+      );
+    }
+    return;
+  }
+
+  const targetId =
+    change.type === "structured_state" ? change.stateRecordId : change.canonicalFactId;
+  if (!targetId.trim()) {
+    addFinding(
+      findings,
+      "EMPTY_STRUCTURED_TARGET_ID",
+      "Structured candidate requires a target id.",
+      { changeType: change.type },
+    );
+  }
+  if (Object.keys(change.content).length === 0) {
+    addFinding(
+      findings,
+      "EMPTY_STRUCTURED_CHANGE",
+      "Structured candidate cannot be empty.",
+      { changeType: change.type, targetId },
+    );
+  }
+}
+
+function resultingSceneText(
+  scene: Scene | undefined,
+  changes: readonly CandidateAtomicChange[],
+  findings: ValidationFinding[],
+): string {
+  const sceneChanges = changes.filter(
+    (change): change is Extract<CandidateAtomicChange, { type: "text" | "local_text" }> =>
+      change.type === "text" || change.type === "local_text",
+  );
+  if (sceneChanges.length === 0) return scene?.text ?? "";
+  if (sceneChanges.length > 1) {
+    addFinding(
+      findings,
+      "DUPLICATE_CANDIDATE_TARGET",
+      "Composite candidate contains multiple changes for one scene.",
+      { sceneId: scene?.id ?? "unknown" },
+    );
+    return scene?.text ?? "";
+  }
+
+  const sceneChange = sceneChanges[0];
+  if (!sceneChange) return scene?.text ?? "";
+  if (sceneChange.type === "text") return sceneChange.text;
+  try {
+    if (!scene) return "";
+    return replaceTargetSpan({
+      scene,
+      target: sceneChange.targetSpan,
+      replacement: sceneChange.replacement,
+    });
+  } catch {
+    return scene?.text ?? "";
+  }
+}
+
+export function validateCandidate(request: ValidationRequest): ValidationResult {
+  const findings: ValidationFinding[] = [];
+  const changes = atomicChanges(request.candidate.change);
+  const seenTargets = new Set<string>();
+  for (const change of changes) {
+    const key = targetKey(change);
+    if (seenTargets.has(key)) {
+      addFinding(
+        findings,
+        "DUPLICATE_CANDIDATE_TARGET",
+        "Composite candidate contains duplicate targets.",
+        { target: key },
+      );
+    }
+    seenTargets.add(key);
+    validateAtomicChange(change, request.scene, findings);
+  }
+
+  const proposedText = resultingSceneText(request.scene, changes, findings);
+  for (const phrase of request.mustPreserve) {
+    if (!proposedText.includes(phrase)) {
+      addFinding(
+        findings,
+        "REQUIRED_PHRASE_MISSING",
+        `Required phrase is missing: ${phrase}`,
+        { phrase },
+      );
+    }
+  }
+
+  const outcome: ValidationOutcome = findings.some((finding) => finding.severity === "error")
+    ? "fail"
+    : "pass";
+
+  const entryResults: readonly ValidationEntryResult[] = Object.freeze([
+    Object.freeze({
+      entryReference: "basic-candidate-validation",
+      executionMode: "full_reexecution" as const,
+      verdict: outcome,
+      findings: Object.freeze(findings),
+      evidence: Object.freeze([]),
+    }),
+  ]);
+
+  const run = createValidationRun({
+    id: request.validationId,
+    changeSetRevisionId: request.changeSetRevisionId,
+    planVersionId: request.planVersionId,
+    validatorId: "basic-candidate-validator",
+    entryResults,
+    executionState: "completed",
+    outcome,
+    createdAt: request.createdAt,
+  });
+
+  return { run, outcome };
+}
+```
+
+Then migrate `tests/production/basicValidator.test.ts`. Keep all 12 existing cases and their expected codes / outcomes unchanged:
+
+1. Add `changeSetRevisionId: "cs-1-r1",` and `planVersionId: "plan-1",` to every `validateCandidate({ ... })` call.
+2. Findings now live inside the entry result. Replace every `run.findings` read with the same read on `run.entryResults[0]?.findings` (for example `result.run.entryResults[0]?.findings[0]` and `result.run.entryResults[0]?.findings.some(...)`). The `run.outcome` and `result.outcome` reads stay as they are.
+3. Add this case that pins the new binding:
+
+```ts
+  it("binds the validation run to the change set revision and frozen plan version", () => {
+    const result = validateCandidate({
+      validationId: "validation-binding",
+      changeSetRevisionId: "cs-1-r1",
+      planVersionId: "plan-1",
+      candidate: candidate({ type: "text", sceneId: "scene-1", text: "New text" }),
+      scene: scene(),
+      mustPreserve: [],
+      createdAt: now,
+    });
+
+    expect(result.run.changeSetRevisionId).toBe("cs-1-r1");
+    expect(result.run.planVersionId).toBe("plan-1");
+    expect("candidateId" in result.run).toBe(false);
+    expect("candidateRevisionId" in result.run).toBe(false);
+    expect(result.run.entryResults[0]?.entryReference).toBe("basic-candidate-validation");
+  });
+```
+
+`planVersionId` stands for an already-frozen Validation Plan version. Do not derive it from a mutable plan or from a Candidate Revision, and do not build a Frozen Validation Plan assembly or any advanced validator here.
+
+- [ ] **Step 6: Run typecheck and the validator tests**
+
+Run:
 
 ```bash
-git add src/production/domain/validationRun.ts tests/production/validationRun.test.ts
+npm test -- --run tests/production/validationRun.test.ts
+npm test -- --run tests/production/basicValidator.test.ts
+npm run typecheck
+```
+
+Expected: PASS with 7 tests and 13 tests; typecheck clean.
+
+- [ ] **Step 7: Commit**
+
+```bash
+git add src/production/domain/validationRun.ts tests/production/validationRun.test.ts src/production/application/validateCandidate.ts tests/production/basicValidator.test.ts
 git commit -m "refactor: bind validation run to change set revision"
 ```
 
@@ -2998,7 +3319,14 @@ export async function commitChangeSetRevision(input: {
 git rm src/safety/application/commitCandidate.ts
 ```
 
-In `src/http/routes.ts`, replace the `commitCandidate` import and the `/candidates/:candidateId/commit` handler body with a `/change-sets/:changeSetId/commit` handler that builds a `ChangeSetRevision` from the request, runs `commitChangeSetRevision`, and returns the commit.
+In `src/http/routes.ts`, replace the `commitCandidate` import and the `/candidates/:candidateId/commit` handler body with a `/change-sets/:changeSetId/commit` handler that:
+
+1. builds a `ChangeSetRevision` from the request (Changes derived from the Candidate, which stays a Change Source / context only);
+2. keeps the basic validator capability: call `validateCandidate({ validationId, changeSetRevisionId: revision.revisionId, planVersionId, candidate, scene, mustPreserve, createdAt })` so the produced `ValidationRun` binds to the Change Set Revision and the frozen plan version, and keep the `outcome === "fail"` -> `422` response;
+3. builds the `ReviewDecision` bound to `changeSetRevisionId` + `approvalScope` instead of `candidateId` / `candidateRevisionId`;
+4. runs `commitChangeSetRevision` and returns the commit.
+
+Add `planVersionId` to the request body for the frozen Validation Plan version. Do not pass `candidateId` or `candidateRevisionId` to the validation layer as a Validation Target, and do not drop the `validateCandidate` capability.
 
 Then update `tests/app/coCreationLoop.test.ts` and `tests/http/api.test.ts` so they build a Change Set Revision and call `commitChangeSetRevision` instead of `commitCandidate`.
 
@@ -3035,6 +3363,7 @@ git commit -m "refactor: commit change set revisions and remove legacy candidate
 - Every task has a failing test, a passing test, and a commit step.
 - Change Set is an Aggregate Root; Change and Revision match the locked model.
 - ValidationRun, ReviewDecision, and NarrativeCommit bind only to Change Set Revision.
+- validateCandidate is migrated (not deleted) and its ValidationRun binds to the Change Set Revision + frozen plan version.
 - GenerationTask holds no candidate id state.
 - No task leaves two formal semantic systems in place.
 - Deferred items are listed and not implemented.
