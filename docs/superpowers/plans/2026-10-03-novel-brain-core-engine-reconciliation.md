@@ -405,6 +405,79 @@ describe("Change", () => {
     );
     expect(() => assertNoDuplicateTargets([first])).not.toThrow();
   });
+
+  it("deep-freezes nested payload content", () => {
+    const change = createChange({
+      ...baseInput(),
+      payload: { text: "New text", meta: { tags: ["a"] } },
+    });
+    const meta = change.payload.meta as { tags: string[] };
+    expect(() => meta.tags.push("b")).toThrow();
+  });
+
+  it("rejects a target object id containing the sub-address separator", () => {
+    expect(() =>
+      createChange({
+        ...baseInput(),
+        targetAddress: { targetType: "manuscript", objectId: "scene-1#x" },
+      }),
+    ).toThrow("targetAddress.objectId must not contain '#'");
+  });
+
+  it("rejects a sub-address containing the separator", () => {
+    expect(() =>
+      createChange({
+        ...baseInput(),
+        targetAddress: { targetType: "story_state", objectId: "scene-1", subAddress: "a#b" },
+      }),
+    ).toThrow("targetAddress.subAddress must not contain '#'");
+  });
+
+  it("treats the same object id with different sub-addresses as distinct addresses", () => {
+    const first = createChange({
+      ...baseInput(),
+      id: "change-a",
+      targetAddress: {
+        targetType: "story_state",
+        objectId: "scene-1",
+        subAddress: "character_state:john",
+      },
+    });
+    const second = createChange({
+      ...baseInput(),
+      id: "change-b",
+      targetAddress: {
+        targetType: "story_state",
+        objectId: "scene-1",
+        subAddress: "character_state:mary",
+      },
+    });
+    expect(() => assertNoDuplicateTargets([first, second])).not.toThrow();
+  });
+
+  it("rejects two changes that share a sub-address", () => {
+    const first = createChange({
+      ...baseInput(),
+      id: "change-a",
+      targetAddress: {
+        targetType: "story_state",
+        objectId: "scene-1",
+        subAddress: "character_state:john",
+      },
+    });
+    const second = createChange({
+      ...baseInput(),
+      id: "change-b",
+      targetAddress: {
+        targetType: "story_state",
+        objectId: "scene-1",
+        subAddress: "character_state:john",
+      },
+    });
+    expect(() => assertNoDuplicateTargets([first, second])).toThrow(
+      "Duplicate target address in change set revision: story_state:scene-1#character_state:john",
+    );
+  });
 });
 ```
 
@@ -416,6 +489,7 @@ Expected: FAIL because `src/production/domain/change.ts` does not exist.
 - [ ] **Step 3: Write the minimal implementation**
 
 ```ts
+import { deepFreeze } from "../../shared/domain/immutable";
 import type { DomainId } from "../../shared/domain/ids";
 import type { VersionSet } from "../../shared/domain/versioning";
 
@@ -470,6 +544,12 @@ export function createChange(input: {
   if (!input.sourceReference.hash) throw new Error("sourceReference.hash is required");
   if (!input.targetAddress) throw new Error("targetAddress is required");
   if (!input.targetAddress.objectId) throw new Error("targetAddress.objectId is required");
+  if (input.targetAddress.objectId.includes("#")) {
+    throw new Error("targetAddress.objectId must not contain '#'");
+  }
+  if (input.targetAddress.subAddress?.includes("#")) {
+    throw new Error("targetAddress.subAddress must not contain '#'");
+  }
   if (Object.keys(input.basedOnVersionSet).length === 0) {
     throw new Error("basedOnVersionSet must contain at least one dependency");
   }
@@ -477,9 +557,9 @@ export function createChange(input: {
   return Object.freeze({
     id: input.id,
     sourceType: input.sourceType,
-    sourceReference: Object.freeze({ ...input.sourceReference }),
-    targetAddress: Object.freeze({ ...input.targetAddress }),
-    payload: Object.freeze({ ...input.payload }),
+    sourceReference: deepFreeze({ ...input.sourceReference }),
+    targetAddress: deepFreeze({ ...input.targetAddress }),
+    payload: deepFreeze({ ...input.payload }),
     basedOnVersionSet: input.basedOnVersionSet,
   });
 }
@@ -504,7 +584,7 @@ export function assertNoDuplicateTargets(changes: readonly Change[]): void {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npm test -- --run tests/production/change.test.ts`
-Expected: PASS with 7 tests.
+Expected: PASS with 12 tests.
 
 - [ ] **Step 5: Commit**
 
