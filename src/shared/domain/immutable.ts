@@ -1,8 +1,13 @@
 export function deepFreeze<T>(value: T): T {
-  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
-    Object.freeze(value);
+  return deepFreezeInternal(value, new WeakSet<object>());
+}
+
+function deepFreezeInternal<T>(value: T, seen: WeakSet<object>): T {
+  if (value !== null && typeof value === "object" && !seen.has(value)) {
+    seen.add(value);
+    if (!Object.isFrozen(value)) Object.freeze(value);
     for (const nested of Object.values(value as Record<string, unknown>)) {
-      deepFreeze(nested);
+      deepFreezeInternal(nested, seen);
     }
   }
   return value;
