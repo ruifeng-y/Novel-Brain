@@ -2473,28 +2473,28 @@ Entity / Aggregate Boundary Review is CLOSED. The following four items are decid
               query Candidate.taskId -> Candidate[]
    Note:      addCandidateReference is legacy; completeGenerationTask keeps the
               "at least one candidate" process invariant as transient validation only
-   Status:    OPEN / PENDING migration
+   Status:    DONE
 
 2. ValidationRun binding
    Decision:  bind to Change Set Revision + Frozen Validation Plan Version
    Existing:  candidateId + candidateRevisionId
    Target:    changeSetRevisionId + planVersionId
    Note:      Candidate becomes optional Context / Evidence Reference
-   Status:    OPEN / PENDING migration
+   Status:    DONE
 
 3. ReviewDecision binding
    Decision:  bind to Change Set Revision + Approval Scope
    Existing:  candidateId + candidateRevisionId
    Target:    changeSetRevisionId + approvalScope
    Note:      Candidate remains Decision Evidence / Source Context only
-   Status:    OPEN / PENDING migration
+   Status:    DONE
 
 4. NarrativeCommit binding
    Decision:  bind to Change Set Revision
    Existing:  candidateId + candidateRevisionId + validationRunIds + reviewDecisionId
    Target:    changeSetRevisionId + validation and approval references
    Note:      Candidate is no longer the commit subject
-   Status:    OPEN / PENDING migration
+   Status:    DONE
 ```
 
 Migration chain:
@@ -2540,7 +2540,7 @@ Boundary Review conclusion:
 Entity Design Status:      CLOSED
 Locked Baseline Conflicts: resolved by decision (4 items)
 Writing-Plans Blockers:    NONE
-Reconciliation Items:      OPEN / PENDING migration
+Reconciliation Items:      COMPLETE
 ```
 
 Reconciliation items are decided migration tasks. They do not reopen entity design.
@@ -2614,11 +2614,11 @@ Status:
 Entity Design Status:      CLOSED
 Locked Baseline Conflicts: resolved by decision (4 items)
 Writing-Plans Blockers:    NONE
-Reconciliation Items:      OPEN / PENDING migration
+Reconciliation Items:      COMPLETE
 ```
 
 The three PENDING areas above are not writing-plans blockers for the Co-Creation and Real AI Runtime scope. They stay pending until a plan needs them.
 
-Next: `writing-plans`, using this Locked Product and Entity Design Baseline plus the four Reconciliation Items as input.
+Writing Plan: `EXECUTED`. Core Engine Reconciliation: `COMPLETE`. Await the next product / engineering workflow from this frozen baseline.
 
 This document is the stable context baseline. The confirmed decisions in Sections 1, 2, 3, and 5 are not open for re-litigation.
