@@ -712,4 +712,3 @@ Two execution options:
 2. **Inline Execution** — execute tasks in this session with checkpoints.
 
 The first implementation task is `Task 2.1 — Execution Attempt Lifecycle and Evidence`.
-
