@@ -728,6 +728,78 @@ describe("ChangeSet aggregate", () => {
       }),
     ).toThrow("Closed change set cannot be modified");
   });
+
+  it("requires a revisionId that differs from the current revision", () => {
+    const changeSet = createChangeSet({
+      id: "cs-1",
+      novelId: "novel-1",
+      initialRevisionId: "cs-1-r1",
+      createdAt: now,
+    });
+    expect(() =>
+      replaceChangeSetChanges({ changeSet, changes: [], revisionId: "", updatedAt: later }),
+    ).toThrow("revisionId is required");
+    expect(() =>
+      replaceChangeSetChanges({
+        changeSet,
+        changes: [],
+        revisionId: "cs-1-r1",
+        updatedAt: later,
+      }),
+    ).toThrow("revisionId must differ from the current revision");
+  });
+
+  it("refuses to move updatedAt backward", () => {
+    const changeSet = createChangeSet({
+      id: "cs-1",
+      novelId: "novel-1",
+      initialRevisionId: "cs-1-r1",
+      createdAt: now,
+    });
+    const earlier = new Date(now.getTime() - 1000);
+    expect(() =>
+      replaceChangeSetChanges({
+        changeSet,
+        changes: [],
+        revisionId: "cs-1-r2",
+        updatedAt: earlier,
+      }),
+    ).toThrow("updatedAt cannot move backward");
+    expect(() =>
+      closeChangeSet({ changeSet, disposition: "superseded", updatedAt: earlier }),
+    ).toThrow("updatedAt cannot move backward");
+  });
+
+  it("closes with the superseded disposition", () => {
+    const changeSet = createChangeSet({
+      id: "cs-1",
+      novelId: "novel-1",
+      initialRevisionId: "cs-1-r1",
+      createdAt: now,
+    });
+    const closed = closeChangeSet({ changeSet, disposition: "superseded", updatedAt: later });
+    expect(closed.lifecycle).toBe("closed");
+    expect(closed.closureDisposition).toBe("superseded");
+  });
+
+  it("copies timestamps so callers cannot mutate a frozen change set", () => {
+    const changeSet = createChangeSet({
+      id: "cs-1",
+      novelId: "novel-1",
+      initialRevisionId: "cs-1-r1",
+      createdAt: now,
+    });
+    const mutable = new Date(later.getTime());
+    const updated = replaceChangeSetChanges({
+      changeSet,
+      changes: [change("change-1")],
+      revisionId: "cs-1-r2",
+      updatedAt: mutable,
+    });
+    mutable.setTime(0);
+    expect(updated.updatedAt.getTime()).toBe(later.getTime());
+    expect(Object.isFrozen(updated)).toBe(true);
+  });
 });
 ```
 
@@ -772,8 +844,8 @@ export function createChangeSet(input: {
     changes: Object.freeze([]),
     currentRevisionId: input.initialRevisionId,
     lifecycle: "open",
-    createdAt: input.createdAt,
-    updatedAt: input.createdAt,
+    createdAt: new Date(input.createdAt.getTime()),
+    updatedAt: new Date(input.createdAt.getTime()),
   });
 }
 
@@ -787,6 +859,9 @@ export function replaceChangeSetChanges(input: {
     throw new Error("Closed change set cannot be modified");
   }
   if (!input.revisionId) throw new Error("revisionId is required");
+  if (input.revisionId === input.changeSet.currentRevisionId) {
+    throw new Error("revisionId must differ from the current revision");
+  }
   if (input.updatedAt < input.changeSet.updatedAt) {
     throw new Error("updatedAt cannot move backward");
   }
@@ -796,7 +871,7 @@ export function replaceChangeSetChanges(input: {
     ...input.changeSet,
     changes: Object.freeze([...input.changes]),
     currentRevisionId: input.revisionId,
-    updatedAt: input.updatedAt,
+    updatedAt: new Date(input.updatedAt.getTime()),
   });
 }
 
@@ -816,7 +891,7 @@ export function closeChangeSet(input: {
     ...input.changeSet,
     lifecycle: "closed",
     closureDisposition: input.disposition,
-    updatedAt: input.updatedAt,
+    updatedAt: new Date(input.updatedAt.getTime()),
   });
 }
 ```
@@ -824,7 +899,7 @@ export function closeChangeSet(input: {
 - [ ] **Step 4: Run the test to verify it passes**
 
 Run: `npm test -- --run tests/production/changeSet.test.ts`
-Expected: PASS with 6 tests.
+Expected: PASS with 10 tests.
 
 - [ ] **Step 5: Commit**
 
