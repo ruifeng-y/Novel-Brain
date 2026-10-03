@@ -1548,14 +1548,19 @@ The following areas have confirmed semantics but pending detailed entity structu
 
 ```text
 Narrative Proposal
-  Semantic role:        confirmed (independently evolving creation decision unit)
-  Lifecycle per type:   confirmed (target type determines adoption path)
-  Detailed structure:   pending
+  Status: CLOSED by Section 5.1
+  (independent Aggregate Root; three orthogonal dimensions; revision model;
+   branch / merge lineage; section disposition; section provenance; open questions)
 
 Adoption Decision / Change Set
-  Separation:           confirmed (Candidate != Change Set; Adoption != Commit)
-  Validation target:    confirmed (validation runs against the resulting Change Set)
-  Exact representation: pending
+  Status: CLOSED by Sections 5.2 - 5.4
+  (Adoption Decision immutable event; Change Set Aggregate Root; Change entity;
+   immutable revision; diff; triggers; inheritance)
+
+Conflict / Resolution / Rebase / Validation / Approval / Commit Gate
+  Status: CLOSED by Sections 5.5 - 5.8
+  (conflict records; resolution strategies; lineage; rebase modes;
+   validation plan and run; commit gate; approval requirement and gate)
 
 Production Run / Run Plan / Checkpoint
   Process semantics:    confirmed (Plan -> Approve -> Execute; Checkpoint as formal state)
@@ -1569,6 +1574,7 @@ Story Foundation Projection
   Projection shape:     pending
 
 Open Questions / Narrative Health / Recall
+  Proposal-local Open Questions: CLOSED by Section 5.1.6
   Active Narrative
   Layer semantics:      confirmed (projection, non-blocking, explainable)
   Projection schema
@@ -1667,7 +1673,830 @@ Known Clarifications:                5 recorded (C1-C5)
 
 ---
 
-## 5. Deferred and Out of Scope
+## 5. Entity Design Baseline (Locked)
+
+This section records entity-level decisions confirmed during Entity Brainstorming. It supplements Sections 1-3 and resolves part of Section 4.
+
+Entity Brainstorming rules:
+
+```text
+May discuss:    Entity / Lifecycle / Ownership / References / Revision / Projection / Invariants
+May not reopen: Sections 1-3 confirmed product semantics and boundaries
+```
+
+### 5.1 Narrative Proposal
+
+Narrative Proposal is an independent Aggregate Root.
+
+```text
+Narrative Proposal (Aggregate Root)
+├── Proposal Identity
+├── Proposal Type
+├── Scope
+├── Sections[]
+│   ├── Section Identity
+│   ├── Content
+│   ├── Section-local Provenance
+│   └── Current Adoption Disposition
+├── Proposal-local Open Questions[]
+├── Lineage References (parent / merge sources)
+└── Current Revision Pointer
+```
+
+Not owned by the Proposal Aggregate:
+
+```text
+Adoption Decision
+Change Set
+Generation Audit / Provenance
+Branch Source Proposal (referenced only)
+Merge Source Proposals (referenced only)
+```
+
+#### 5.1.1 Three Orthogonal Dimensions
+
+```text
+1. Proposal Artifact Lifecycle   Draft / Active / Closed
+2. Adoption Path                 constrained by Proposal Type
+3. Section Disposition           Pending / Adopted / Rejected / Deferred
+```
+
+Artifact lifecycle is common. Adoption path is per type. Section disposition is per section. They must not be collapsed into one state machine.
+
+```text
+Proposal Type     -> Allowed Adoption Paths
+Adoption Decision -> selects the actual path
+```
+
+| Proposal Type | Adoption Path |
+| --- | --- |
+| Story Concept | Canonical Fact or Plan |
+| Core Conflict | Canonical Fact or Plan |
+| World Direction | Plan, then later World Rule Canon |
+| Protagonist Direction | Plan, then later Character Canon |
+| Main Plot / Story Engine | Plan |
+| Character | Canonical Character Profile plus Plan |
+| Relationship | Canonical Relationship or Plan |
+| Plot Thread | Plan, then later Canonical Plot Decision |
+| Foreshadowing | Foreshadowing Plan -> Setup Scene -> Payoff Scene -> Canonical Narrative Fact |
+| Theme | Plan / Style Constraint |
+| Long-form Direction | Plan |
+
+`Closed` is a terminal artifact state. Continuing work from a Closed proposal requires a Branch into a new Proposal.
+
+#### 5.1.2 Proposal Revision
+
+```text
+Proposal Revision = Immutable Full Snapshot
+```
+
+```text
+Proposal Revision
+├── Revision ID
+├── Revision Number (monotonic)
+├── Parent Revision
+├── Sections Snapshot[]
+├── Section Hashes[]
+├── Proposal-local Open Questions Snapshot
+├── Trigger
+└── Provenance
+```
+
+Section Identity is stable across revisions; content, disposition, and provenance may change. Section removal is a revision change, not identity masking.
+
+Revision Content Change triggers: content change, disposition change, open question state change, section add, section remove. Ordering and display metadata never produce a revision.
+
+Retention: the Current Revision and any revision reachable from retained evidence (Adoption Decision, Change Set, Branch / Merge Lineage, Provenance / Audit) must be retained. Only unreferenced and unreachable revisions may become GC eligible.
+
+#### 5.1.3 Branch and Merge
+
+Branch and Merge create new Proposal Identities and never modify source proposals. Revision history within one Proposal is linear; Branch / Merge lineage is a Proposal-to-Proposal relationship.
+
+Branch copies design state and preserves lineage but does not copy decision authority:
+
+```text
+Branched Section
+Current Disposition = Pending
+Source Disposition retained as lineage metadata only
+```
+
+Merge is symmetric: resolved sections start as Pending. A new Adoption Decision is required to mark them Adopted.
+
+Lineage is held by the new Proposal; parent proposals do not maintain child arrays.
+
+#### 5.1.4 Section Disposition and Adoption Invalidation
+
+```text
+Disposition: Pending / Adopted / Rejected / Deferred
+```
+
+`Edited then Adopted` is not a state; it is a Section Provenance fact.
+
+```text
+Adoption Decision scope = Proposal Identity + Proposal Revision + Section Identity
+```
+
+Only one automatic transition exists:
+
+```text
+Adopted + Content Change in a new Revision
+-> Adoption Invalidation
+-> Disposition = Pending
+```
+
+All other transitions require an explicit Adoption Decision. Rejected is never implicitly adopted. Only Adopted sections are eligible Change Sources, and Adopted does not mean committed. Proposal-level Adoption Summary is a derived projection.
+
+#### 5.1.5 Section-level Provenance
+
+Section-level Provenance is a shared semantic contract for Proposal Sections and Candidate Sections. Physical field shape may differ per host, but the semantics are shared.
+
+```text
+Section Provenance
+├── Origin
+│   ├── Origin Type (immutable)
+│   └── Origin Reference(s) (version-pinned)
+├── Edit Lineage (append-only)
+├── Source / Evidence References (version-pinned)
+└── Adoption Decision References (append-only)
+```
+
+Origin Type values: Author Created, AI Generated, Branched From, Merged From, Extracted From Text.
+
+Rules: Origin Type is immutable; Edit Lineage and Adoption References are append-only; all external evidence is referenced by Identity + Version + Hash; provenance never inlines the Generation Audit Chain; provenance snapshots with each Proposal Revision; provenance is never rewritten to hide history.
+
+#### 5.1.6 Proposal-local Open Questions
+
+```text
+Proposal-local Open Question
+├── Question Identity
+├── Question Text
+├── Scope (Proposal-level or Section-level)
+├── State: Open / Resolved / Dismissed
+├── Resolution Reference (required when Resolved)
+└── Provenance
+```
+
+`Dismissed` is not `Resolved`: Resolved means an answer exists; Dismissed means an answer is no longer required.
+
+Any state change produces a new Proposal Revision. AI and system may produce Resolution Suggestions but must never set Resolved. Resolution Reference must be version-pinned.
+
+Novel-level Open Questions is a reference-only projection and never a second truth.
+
+### 5.2 Adoption Decision
+
+Adoption Decision is an independent immutable decision event, outside the Proposal Aggregate.
+
+```text
+Adoption Decision
+├── Decision Identity
+├── Scope: Proposal Identity + Proposal Revision + Section Identity
+├── Decision Type: Adopt / Reject / Defer / Reopen
+├── Target Type: Canonical Fact / Plan / Structure / Manuscript / StoryState
+├── Adopted Content (Adopt only)
+│   ├── Content Reference
+│   └── Content Hash
+├── Actor: Author / Policy
+├── Reason
+└── Decided At
+```
+
+Rules:
+
+- Immutable and append-only.
+- Scope binds to one Proposal Revision and one Section.
+- Adopt must carry the exact content reference and hash, because adoption applies to a specific revision content.
+- One Adopt Decision produces exactly one Change.
+- Reject, Defer, and Reopen produce no Change.
+- Adoption Decision derives Current Adoption Disposition but is not owned by the Proposal.
+- Adoption and Commit remain separate.
+
+### 5.3 Change Set and Change
+
+Change Set is an Aggregate Root.
+
+```text
+Change Set (Aggregate Root)
+├── Change Set Identity
+├── Novel Identity
+├── Changes[]
+├── Current Revision Pointer
+├── Change Set Revision History
+├── Lifecycle: Open / Closed
+└── Closure Disposition: Committed / Abandoned / Superseded
+```
+
+Lifecycle answers whether the Change Set can still be worked on; Closure Disposition answers why it ended. They are separate fields, not one state machine.
+
+Change is an entity inside the aggregate.
+
+```text
+Change
+├── Change Identity (stable within a Change Set across revisions)
+├── Source
+│   ├── Source Type: Proposal Adoption / Candidate / Author Edit / ConflictResolution
+│   └── Source Reference (Identity + Version + Hash)
+├── Target Address
+│   ├── Target Type
+│   ├── Object Identity
+│   └── Optional Sub-address
+├── Payload
+└── basedOnVersionSet
+```
+
+Invariants:
+
+- Every Change has exactly one Source and exactly one Target Address.
+- Target Type is part of the Target Address; a Sub-address is a semantically defined addressable range, not a plain string path.
+- Change Set owns its Changes but does not own Source or Target aggregates.
+- Within one Change Set Revision, the same Target cannot have multiple unresolved Changes.
+- Multiple heterogeneous Change Sources may compose one Change Set.
+- Change Set is not owned by Proposal, Candidate, or GenerationTask.
+
+### 5.4 Change Set Revision
+
+```text
+Change Set Revision = Immutable Full Snapshot
+```
+
+```text
+Change Set Revision
+├── Revision Identity
+├── Revision Number (monotonic)
+├── Parent Revision
+├── Trigger
+├── Changes Snapshot[]
+└── Per-Change basedOnVersionSet
+```
+
+Validation binds to a specific Change Set Revision, not to Change Set identity and not to a Candidate.
+
+#### 5.4.1 Revision Content Change
+
+```text
+Revision Content Change
+├── Change Added
+├── Change Removed
+├── Change Payload Changed
+├── Change Target Address Changed
+├── Change basedOnVersionSet Changed
+└── Conflict Resolution resulting in Change Set content change
+```
+
+Not a Revision Content Change: Change ordering, display metadata, UI grouping, and derived status. Changes[] is semantically an unordered set.
+
+#### 5.4.2 Diff
+
+Diff is computed from stable Change Identity, not content matching.
+
+```text
+Unchanged = Payload + Target Address + basedOnVersionSet + Source all unchanged
+Modified  = same Change Identity with any of the above changed
+Added     = present in child, absent in parent
+Removed   = present in parent, absent in child
+```
+
+A basedOnVersionSet change alone makes the Change Modified, even if the new base remains compatible.
+
+Three concepts must not substitute for one another:
+
+```text
+Diff                -> exact revision content comparison
+Stale               -> base version compatibility
+Evidence Reuse      -> evidence compatibility
+```
+
+#### 5.4.3 Revision Triggers
+
+```text
+Revision Trigger
+├── InitialAssembly
+├── Edit
+├── ConflictResolution
+├── Rebase
+└── Regenerate
+```
+
+Preconditions are checked against concrete status facts, never against Headline Status:
+
+```text
+ConflictResolution -> Parent.UnresolvedConflict = true
+Rebase             -> Parent.Stale = true
+Edit               -> Aggregate Lifecycle = Open and Parent not Committed
+Regenerate         -> re-executable Source / Provenance exists
+```
+
+When conflict and stale coexist: ConflictResolution first, then Rebase.
+
+Each Revision has exactly one Trigger. A ConflictResolution Trigger may reference 0..N Resolution records; each Resolution still corresponds to exactly one Conflict.
+
+#### 5.4.4 Inheritance and Invalidation
+
+A new Revision is a new immutable snapshot built from the parent snapshot, never a shared mutable instance.
+
+```text
+Inherited:
+  Change content as starting point
+  per-Change Source Reference
+  per-Change Source Provenance
+  Resolution Lineage (extended)
+
+Not inherited:
+  Submission Status
+  Validation Status
+  Approval Status
+  Commit Status
+```
+
+Source identity and edit history stay separate: an edit appends to Provenance and does not overwrite the original Source.
+
+Parent evidence may be referenced as historical evidence and must be marked as not applicable to the new Revision. Reference is not applicability.
+
+Revision-level validation must be re-established for every new Revision. Evidence cache reuse is an optimization and never produces a pass verdict.
+
+#### 5.4.5 Revision Projection
+
+```text
+Revision Projection
+├── Headline Status
+├── Conflict Status
+├── Stale Status
+├── Submission Status
+├── Validation Status
+├── Approval Status
+└── Commit Status
+```
+
+Headline priority:
+
+```text
+Committed > Invalid > Stale > Approved > Validated / Failed > Submitted > Ready > Assembling
+```
+
+Headline Status is a workflow and UI projection, not immutable Revision content. Blocking facts are preserved independently: conflict and stale may coexist, and resolving one never discards the other. Validated may be overridden by Stale in the Headline while the historical validation evidence is retained.
+
+Recovery always produces a new Revision: conflict resolution for Invalid, rebase for Stale, edit or regenerate for Failed. Old Revisions are never restored in place and never have their base versions rewritten.
+
+### 5.5 Conflict, Resolution, and Lineage
+
+#### 5.5.1 Conflict Record
+
+```text
+Conflict Record (immutable)
+├── Conflict Identity
+├── Detected Against Revision
+├── Target Address
+├── Conflicting Change References
+├── Conflict Type
+├── Detection Evidence / Rule Reference
+└── Detected At
+```
+
+Conflict is a Revision-level invariant. An unresolved conflict makes the Revision Invalid: it must not enter Validation and must not be committed.
+
+Conflict Resolution State is a derived projection. A Conflict is Resolved only when a Resolution adopted by that Revision ConflictResolution Trigger produced a valid Child Revision. Merely existing as a Resolution does not globally resolve a Conflict.
+
+Interdependent is not Conflict. Two Changes may depend on each other and still coexist. Conflict means two or more Changes cannot simultaneously satisfy Target semantic rules, invariants, operation preconditions, or Change Set rules and therefore require explicit coordination.
+
+#### 5.5.2 Resolution
+
+```text
+Resolution (immutable)
+├── Resolution Identity
+├── Conflict Reference (exactly one)
+├── Against Revision
+├── Strategy: Take A / Take B / Drop / Merge / Split
+├── Affected Change References
+├── Actor
+├── Reason
+└── Decided At
+```
+
+Strategy effects:
+
+```text
+Take A / Take B / Drop -> no new Change Identity
+Merge                  -> one new Change derived from multiple sources
+Split                  -> multiple new Changes derived from one source
+```
+
+Merge and Split result Changes use Source Type = ConflictResolution and Source Reference = Resolution, while Provenance records `Merged From [A, B]` or `Split From [A]`. A Change still has exactly one Source; multi-source relationships live only in Provenance / Resolution Lineage.
+
+A ConflictResolution Trigger may reference multiple Resolutions, but each Resolution corresponds to exactly one Conflict.
+
+#### 5.5.3 Lineage
+
+Lineage direction is unified:
+
+```text
+Result -> Derived From -> Source
+```
+
+```text
+Merge:  X Derived From A, B
+Split:  X Derived From A, Y Derived From A
+```
+
+Take and Drop are Revision-level ConflictResolution and do not require Change-level lineage edges. The Diff reports `Removed = B`; the Resolution reports `Why = Take A` or `Why = Drop`.
+
+Four responsibilities, kept separate:
+
+```text
+Revision Diff    -> What changed?
+Conflict Record  -> What conflict was detected?
+Resolution       -> Why / how was it resolved?
+Change Lineage   -> Where did the resulting Change come from?
+```
+
+Lineage within one Change Set is a DAG. Merging two Change Sets creates a new Change Set Identity and is not a Revision merge inside one Change Set.
+
+Removed Changes do not appear in the child Changes[] but must remain fully traceable through Diff + Trigger + Resolution + Lineage.
+
+### 5.6 Rebase
+
+Recovery operations and Revision Triggers are separate layers:
+
+```text
+Automatic Rebase -> Trigger = Rebase
+Manual Rebase    -> Trigger = Rebase
+Regenerate       -> Trigger = Regenerate
+```
+
+Regenerate is never a third Rebase semantics.
+
+#### 5.6.1 Automatic Rebase
+
+Automatic Rebase is conservative. `Safe` means every mandatory Safety Condition obtained sufficient evidence as required by policy; it is not an absolute guarantee.
+
+```text
+Auto-Rebase Safety Conditions
+├── Target Address resolvable (object exists, sub-address resolvable)
+├── No semantic ambiguity (unique deterministic replay)
+├── Base compatibility determinable
+├── No new Conflict introduced
+└── Semantic Intent unchanged
+```
+
+If any condition cannot be confirmed, automatic execution is forbidden and the Change falls back to Manual Rebase.
+
+The Auto-Rebase Decision is immutable evidence recording the conditions evaluated, their evidence, and the outcome.
+
+#### 5.6.2 Manual Rebase
+
+Manual Rebase may adapt Target, Anchor, Span, or Context Reference to a changed base, but must not change the Change Semantic Intent. If intent changes, the correct trigger is Edit or Regenerate.
+
+The author Semantic Intent Assertion is recorded in Manual Rebase Coordination Evidence and is an author assertion, not a system-verified truth. It does not produce a semantic validation pass.
+
+#### 5.6.3 Rebase Effects
+
+```text
+Automatic / Manual Rebase -> Change Identity preserved, Source preserved, basedOnVersionSet updated
+Regenerate                -> new Change Identity, new Source, Provenance `Regenerated From [old Change]`
+```
+
+Rebase repairs stale but does not guarantee conflict-free. New conflicts follow the standard Conflict Record / Resolution flow. Rebase must not absorb ConflictResolution.
+
+Rebase failure is recorded as a Rebase Outcome:
+
+```text
+Rebase Result
+├── Rebased
+├── Needs Author Action
+└── Failed
+```
+
+`Needs Author Action` is an outcome, not a Revision Status.
+
+```text
+Rebase Operation (immutable)
+├── Rebase Identity
+├── Parent Revision Reference
+├── Per-Change Outcomes[]
+│   ├── Change Reference
+│   ├── Mode: Automatic / Manual
+│   ├── Old Base Version Set
+│   ├── New Base Version Set
+│   ├── Payload Change Reference
+│   └── Outcome: Rebased / Needs Author Action / Failed
+├── Evidence References[]
+└── Actor
+```
+
+The Rebase Operation does not hold a reverse reference to the resulting Revision; the resulting Revision is the Revision whose Trigger references it. This avoids an unnecessary self-reference cycle in the evidence graph.
+
+Rebase and Regenerate never inherit prior Submission, Validation, Approval, or Commit status.
+
+### 5.7 Validation Plan and ValidationRun
+
+#### 5.7.1 Validation Plan
+
+```text
+Validation Plan
+├── Assembled (adjustable)
+└── Frozen (immutable execution baseline)
+```
+
+Execution must use a Frozen Plan Version. Freezing pins Entries, Execution Mode, Rule Version, Policy Version, and Cache References. Changing a frozen plan requires a new Plan Version; a frozen version used for execution is never modified.
+
+Assembly drafts do not each need an immutable identity; the immutable execution identity begins at the Frozen Version.
+
+```text
+Validation Plan
+├── Plan Identity
+├── Revision Reference
+├── Plan Version
+├── Entries[]
+└── Lifecycle: Assembled / Frozen
+```
+
+#### 5.7.2 Entry Execution Modes
+
+```text
+Execution Mode
+├── Full Re-execution
+├── Cached Reuse
+└── Not Applicable
+```
+
+Execution Mode and Verdict are separate dimensions. Not Applicable is an Execution Mode, not a fourth Verdict, and an N/A entry produces no verdict.
+
+```text
+Full Re-execution -> run the current rule on the current target
+Cached Reuse      -> reuse eligible evidence / intermediate artifacts, still run the current rule, still produce a new verdict
+Not Applicable    -> current Revision does not satisfy Rule Applicability; entry does not execute
+```
+
+Cached Reuse is never skip-validation and never inherits a pass. It reuses evidence; it does not reuse verdicts.
+
+#### 5.7.3 Evidence Dependency Closure
+
+```text
+Dependency Closure
+├── Change Reference + Revision
+├── Target Object + Version
+├── Base Version
+├── Context Reference + Version
+└── Rule-defined additional dependencies
+```
+
+```text
+Closure Compatible -> Cache Eligible
+Closure Changed    -> Full Re-execution
+Closure Unknown    -> Full Re-execution
+```
+
+Unknown must never be treated as unchanged.
+
+Revision-level and cross-change rules always re-execute when still applicable; their verdicts are never inherited from a parent revision. A removed Change does not automatically make a rule Not Applicable and may trigger new cross-change, dependency, or consistency checks.
+
+#### 5.7.4 ValidationRun
+
+```text
+ValidationRun
+├── Run Identity
+├── Frozen Plan Version Reference
+├── Revision Reference
+├── Entry Results[]
+├── Execution State: Running / Completed / Interrupted / Failed
+└── Outcome (only when Completed)
+```
+
+```text
+Entry Result
+├── Entry Reference
+├── Execution Mode Used
+├── Entry Verdict: Pass / Fail / Needs Review
+├── Finding[]
+└── Evidence[]
+```
+
+Responsibilities are layered:
+
+```text
+Overall Outcome -> aggregate conclusion of the complete run
+Entry Verdict   -> judgment of one rule
+Finding         -> anomaly or phenomenon the rule observed
+Evidence        -> support for the rule judgment
+```
+
+Evidence is evidence of rule execution and is not required to sit under a Finding. A Pass entry may have no Finding and still have Evidence; a Pass entry may also carry non-blocking Findings.
+
+Interrupted and Failed runs may retain partial evidence and execution history but produce no final Outcome.
+
+#### 5.7.5 Outcome Aggregation
+
+```text
+Fail         = any Applicable Mandatory Entry = Fail
+Needs Review = no Mandatory Fail, and any Applicable Mandatory Entry = Needs Review
+Pass         = all Applicable Mandatory Entries = Pass
+```
+
+Not Applicable entries neither fail nor pass. N/A must be justified by Rule Applicability Policy and cannot be mechanically derived from a removed target.
+
+Needs Review is produced by Rule / Validation Policy definitions. Confidence is one possible input and cannot independently decide Needs Review.
+
+Mandatory Fail blocks commit. Mandatory Needs Review enters the independent Approval / Decision gate. Recommended and Advisory never block by themselves.
+
+Validation verdicts belong to the current ValidationRun and are never inherited from a parent revision or parent run.
+
+### 5.8 Commit Gate, Approval, and ReviewDecision
+
+Three independent evidence streams are never merged into one state machine:
+
+```text
+Validation
+├── ValidationRun
+├── Overall Outcome
+└── Evidence
+
+Approval
+├── ReviewDecision
+└── Evidence
+
+Commit Blockers
+├── OCC
+├── Invariant
+├── Revision Validity
+├── Validation
+└── Approval
+```
+
+#### 5.8.1 Commit Gate
+
+```text
+Commit Gate
+├── Revision Validity Gate
+├── Concurrency Gate
+├── Invariant Gate
+├── Validation Gate
+└── Approval Gate
+```
+
+Evaluation order is orchestration only and is never blocker priority. All gates are fully evaluated and all blockers are reported at once; fail-fast is forbidden. Resolving one blocker must not reveal a second one that could have been reported earlier.
+
+Commit Gate is re-evaluated against current state for every commit attempt:
+
+```text
+Current Revision
++ Current Canonical State
++ Current OCC Version
++ Current Validation Evidence
++ Current Approval Evidence
++ Current Commit Policy
+-> Commit Gate Result
+```
+
+No permanently cached `Allowed` exists. A Revision that was validated and approved can still be blocked later if canonical state changed and the Revision became stale.
+
+```text
+Commit Gate Result
+├── Allowed
+└── Blocked
+    ├── Blockers[]
+    └── Required Actions[]
+```
+
+Blocker answers why commit is not allowed; Required Action answers how to unblock. They are separate concepts and Required Action is not a Blocker status enum.
+
+Always blocking: Invalid or Stale Revision, OCC conflict, target-specific invariant violation, Mandatory Fail, missing required approval, and a rejected ReviewDecision. Recommended and Advisory findings do not block by themselves.
+
+#### 5.8.2 Validation and Approval Separation
+
+```text
+Validation Verdict != Approval Decision
+```
+
+Validation judges whether rules are satisfied. Approval decides whether the change is accepted.
+
+```text
+Mandatory Fail         -> Validation Gate Block
+Mandatory Needs Review -> Approval / Decision Gate
+```
+
+Needs Review must never be converted into a Validation Pass. It enters an independent ReviewDecision flow.
+
+#### 5.8.3 ReviewDecision
+
+ReviewDecision is an immutable decision event; Pending is not one of its states.
+
+```text
+ReviewDecision
+├── Decision Identity
+├── Decision: approve / reject / request_regeneration
+├── Decided By: human / policy
+├── Actor
+├── Scope: Change Set Revision + Approval Scope
+├── Reason
+├── Evidence References
+└── Decided At
+```
+
+`request_regeneration` keeps distinct semantics: the current proposal is not accepted and a new candidate or Change is requested. Its mapping into Approval State and Commit Required Action is defined by Approval Policy and Commit Gate, not assumed to equal reject.
+
+Human and policy decisions share one record structure. `decidedBy` and decision provenance distinguish them. Policy decisions must reference Policy Version, Decision Rule, and Evidence Used, and must not bypass a requirement that explicitly demands human judgment.
+
+#### 5.8.4 Approval State
+
+Approval State is a derived projection:
+
+```text
+Approval State = f(Approval Requirement, Applicable ReviewDecisions)
+```
+
+```text
+No decision + Approval Required     -> Pending
+No decision + Approval Not Required -> Not Required
+```
+
+Superseded is a derived applicability projection and never mutates a historical decision. Only a later valid decision covering the same Approval Scope and Requirement supersedes an earlier one. Different scopes never overwrite each other; for example Canon Approval and Manuscript Approval are independent.
+
+#### 5.8.5 Approval Requirement
+
+```text
+Approval Requirement = Policy Projection
+```
+
+```text
+Approval Scope = Requirement Domain + Target Scope
+Target Scope   = Target Type + Object Identity + Optional Sub-address
+```
+
+```text
+Requirement Level: Not Required < Policy Approval < Human Approval
+```
+
+Within one Approval Scope, multiple applicable rules take the strictest requirement. Different scopes are evaluated independently and never aggregated with a global maximum.
+
+```text
+Base Policy
++ Risk Classification
++ Validation Review Requirement
++ Autonomy Adjustment
++ Workspace / Author Policy
++ Safety / Governance Floors
+-> Final Approval Requirement
+```
+
+Risk Classification feeds Approval Requirement and must not form a cycle with it.
+
+Mandatory Needs Review forms a Human Approval Floor. High Risk requires Human Approval. Autonomy may reduce requirements only for low-risk scopes within policy and may never breach the Safety Floor, the High-Risk Human requirement, or the Needs Review Human Floor. Autonomy is a policy input for low-risk governance, never a narrative authority override.
+
+#### 5.8.6 Approval Gate
+
+```text
+Approval Scope Entry
+├── Scope
+├── Requirement
+├── Applicable Decisions
+└── Result: Satisfied / Pending / Blocked
+```
+
+Result derivation:
+
+```text
+Requirement = Not Required                        -> Satisfied
+Required + no applicable valid Decision            -> Pending
+Required + approve + Authority >= Requirement      -> Satisfied
+Required + reject                                  -> Blocked
+Required + request_regeneration                    -> Blocked, Required Action = Regenerate
+```
+
+Decision Authority must be at least the Requirement Level; a lower-authority decision cannot satisfy a higher requirement.
+
+Aggregation:
+
+```text
+Blocked > Pending > Satisfied
+```
+
+All unsatisfied scopes are reported at once and each becomes a Commit Blocker with a Required Action. Approval Gate Result is a derived projection re-evaluated on each commit attempt and never permanently cached.
+
+### 5.9 Entity Brainstorming Reconciliation Items
+
+```text
+1. GenerationTask candidate association
+   Existing Core Engine: GenerationTask owns candidateIds[]
+   This baseline:        growing id arrays should not be domain state
+   Status:               pending reconciliation
+
+2. ValidationRun binding
+   Existing Core Engine: Candidate Revision
+   This baseline:        Change Set Revision
+   Status:               pending reconciliation
+
+3. ReviewDecision binding
+   Existing Core Engine: Candidate Revision
+   This baseline:        Change Set Revision
+   Status:               pending reconciliation
+```
+
+These must be resolved during the Entity / Aggregate Boundary Review before writing-plans. Until they are resolved, the new Validation Target and Approval Target semantics are not fully implemented.
+
+
+
+
+
+
+## 6. Deferred and Out of Scope
 
 Explicitly deferred to later phases:
 
@@ -1698,23 +2527,27 @@ Publishing marketplace
 
 ---
 
-## 6. Next Steps
+## 7. Next Steps
 
 ```text
 Design Spec (this document)
       |
       v
 Entity Brainstorming
-  Narrative Proposal
-  Adoption Decision
-  Change Set
-  Production Run
-  Run Plan
-  Checkpoint
-  Projection
+  [DONE]    Narrative Proposal
+  [DONE]    Adoption Decision
+  [DONE]    Change Set / Change / Revision
+  [DONE]    Conflict / Resolution / Lineage
+  [DONE]    Rebase
+  [DONE]    Validation Plan / ValidationRun
+  [DONE]    Commit Gate / Approval / ReviewDecision
+  [PENDING] Production Run / Run Plan / Checkpoint
+  [PENDING] Story Foundation Projection
+  [PENDING] Novel-level Open Questions / Health / Recall Projection
       |
       v
 Entity / Aggregate Boundary Review
+  including reconciliation items in 4.1 and 5.9
       |
       v
 Final Design Spec Revision
