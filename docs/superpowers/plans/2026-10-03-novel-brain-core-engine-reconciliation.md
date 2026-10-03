@@ -3523,3 +3523,34 @@ git commit -m "refactor: commit change set revisions and remove legacy candidate
 - No task leaves two formal semantic systems in place.
 - Deferred items are listed and not implemented.
 - Acceptance criteria in Section 11 are executable commands.
+
+## 16. Execution Status
+
+Execution completed on 2026-10-04.
+
+```text
+GenerationTask.candidateIds       -> DONE
+ValidationRun binding             -> DONE
+ReviewDecision binding            -> DONE
+NarrativeCommit binding           -> DONE
+Core Engine Reconciliation        -> COMPLETE
+Writing Plan                      -> EXECUTED
+```
+
+Checkpoint history remains un-squashed:
+
+```text
+T1-T7   prior task commits
+T8      887063a ValidationRun checkpoint
+T9      8c316a2 ReviewDecision binding
+T10     bd2bc4a NarrativeCommit binding
+T11     1bfc67e Commit Gate + Commit Application Service
+T12     final legacy removal and caller migration
+```
+
+Acceptance note: `candidateIds` remains only as the transient `completeGenerationTask` input and its
+non-empty process invariant, as explicitly required by Task 7. It is not GenerationTask aggregate
+state and does not persist a second Task -> Candidate relationship.
+
+Deferred items remain exactly those in Section 13, plus the previously ledgered cross-entity Date
+global-immutability question.

@@ -1,752 +1,960 @@
 import { describe, expect, it } from "vitest";
-import { InMemoryRepository, InMemoryRevisionedRepository } from "../../src/app/inMemoryRepositories";
+import { InMemoryCommitTransaction } from "../../src/app/inMemoryCommitTransaction";
+import { createInMemoryEngineDependencies } from "../../src/app/composition";
+import { commitChangeSetRevision } from "../../src/safety/application/commitChangeSetRevision";
+import { createChange, type Change } from "../../src/production/domain/change";
 import {
-  createCandidate,
-  markCandidateValidated,
-  selectCandidate,
-  type Candidate,
-} from "../../src/production/domain/candidate";
-import { createReviewDecision, type ReviewDecision } from "../../src/production/domain/reviewDecision";
-import { createValidationRun, type ValidationRun } from "../../src/production/domain/validationRun";
+  createInitialChangeSetRevision,
+  type ChangeSetRevision,
+} from "../../src/production/domain/changeSetRevision";
+import {
+  createValidationRun,
+  type ValidationOutcome,
+} from "../../src/production/domain/validationRun";
+import {
+  createReviewDecision,
+  type ApprovalScope,
+  type ReviewDecision,
+} from "../../src/production/domain/reviewDecision";
 import {
   commitSceneText,
   createScene,
   type Scene,
 } from "../../src/manuscript/domain/scene";
-import type { CanonicalFact } from "../../src/narrative/canon/domain/canonicalFact";
 import { createCanonicalFact } from "../../src/narrative/canon/domain/canonicalFact";
-import type { StateRecord } from "../../src/narrative/state/domain/stateRecord";
 import { createStateRecord } from "../../src/narrative/state/domain/stateRecord";
-import { commitCandidate } from "../../src/safety/application/commitCandidate";
-import type { NarrativeCommit } from "../../src/safety/domain/narrativeCommit";
-import { InMemoryEventStore, type EventStore } from "../../src/safety/infrastructure/eventStore";
+import { createGenerationTask } from "../../src/production/domain/generationTask";
+import {
+  createNarrativeCommit,
+  markNarrativeCommitCommitted,
+  markNarrativeCommitFailed,
+  type NarrativeCommit,
+} from "../../src/safety/domain/narrativeCommit";
+import { createSceneCommittedEvent } from "../../src/manuscript/domain/manuscriptEvents";
 import {
   createVersionReference,
   createVersionSet,
-  type VersionSet,
+  type VersionReference,
 } from "../../src/shared/domain/versioning";
 import { hashContent } from "../../src/shared/domain/contentHash";
-import type { CandidateChange } from "../../src/production/domain/candidate";
 
-const now = new Date("2026-10-02T00:00:00.000Z");
+const now = new Date("2026-10-03T00:00:00.000Z");
 
-function approvedCandidate(
-  id: string,
-  change: CandidateChange,
-  basedOnVersionSet: VersionSet,
-) {
-  const candidate = selectCandidate(
-    markCandidateValidated(
-      createCandidate({
-        id,
-        taskId: "task-1",
-        novelId: "novel-1",
-        basedOnVersionSet,
-        change,
-        createdAt: now,
-      }),
-      now,
-    ),
-    now,
-  );
-  return {
-    candidate,
-    validationRuns: [
-      createValidationRun({
-        id: `${id}-validation`,
-        candidateId: candidate.id,
-        candidateRevisionId: candidate.currentRevisionId,
-        validatorId: "test-validator",
-        outcome: "pass",
-        findings: [],
-        createdAt: now,
-      }),
-    ],
-    reviewDecision: createReviewDecision({
-      id: `${id}-review`,
-      candidateId: candidate.id,
-      candidateRevisionId: candidate.currentRevisionId,
-      decision: "approve",
-      decidedBy: "human",
-      actorId: "author-1",
-      reason: "",
+function baseScene(): Scene {
+  return commitSceneText({
+    scene: createScene({
+      id: "scene-1",
+      novelId: "novel-1",
+      chapterId: "chapter-1",
+      title: "The Northern Gate",
+      revisionId: "scene-rev-1",
+      commitId: "initial",
       createdAt: now,
     }),
-  };
-}
-
-class FailingSceneRepository extends InMemoryRevisionedRepository<Scene> {
-  failWrites = false;
-
-  override async save(scene: Scene): Promise<void> {
-    if (this.failWrites) throw new Error("scene write failed");
-    await super.save(scene);
-  }
-}
-
-class FailingEventStore implements EventStore {
-  async append(_event: Parameters<EventStore["append"]>[0]): Promise<void> {
-    throw new Error("event write failed");
-  }
-
-  async appendMany(_events: readonly Parameters<EventStore["append"]>[0][]): Promise<void> {
-    throw new Error("event write failed");
-  }
-
-  async listByNovel(_novelId: string): Promise<readonly never[]> {
-    return [];
-  }
+    text: "Alpha middle Omega.",
+    spanAnchors: {
+      middle: {
+        anchorId: "middle",
+        start: 6,
+        end: 12,
+        text: "middle",
+        sourceContentHash: hashContent("middle"),
+      },
+    },
+    revisionId: "scene-rev-2",
+    commitId: "initial",
+    updatedAt: now,
+  });
 }
 
 async function setup() {
-  const scene = createScene({
-    id: "scene-1",
-    novelId: "novel-1",
-    chapterId: "chapter-1",
-    title: "The Northern Gate",
-    revisionId: "scene-rev-1",
-    commitId: "initial-commit",
-    createdAt: now,
-  });
-  const committedScene = commitSceneText({
-    scene,
-    text: "Old text",
-    revisionId: "scene-rev-2",
-    commitId: "initial-commit",
-    updatedAt: now,
-  });
-
-  const candidate = selectCandidate(
-    markCandidateValidated(
-      createCandidate({
-        id: "candidate-1",
-        taskId: "task-1",
-        novelId: "novel-1",
-        basedOnVersionSet: createVersionSet({
-          scene: createVersionReference("Scene", "scene-1", "scene-rev-2"),
-        }),
-        change: { type: "text", sceneId: "scene-1", text: "New text" },
-        createdAt: now,
-      }),
-      now,
-    ),
-    now,
-  );
-  const validationRuns: ValidationRun[] = [
-    createValidationRun({
-      id: "validation-1",
-      candidateId: candidate.id,
-      candidateRevisionId: candidate.currentRevisionId,
-      validatorId: "text-validator",
-      outcome: "pass",
-      findings: [],
-      createdAt: now,
-    }),
-  ];
-  const reviewDecision: ReviewDecision = createReviewDecision({
-    id: "review-1",
-    candidateId: candidate.id,
-    candidateRevisionId: candidate.currentRevisionId,
-    decision: "approve",
-    decidedBy: "human",
-    actorId: "author-1",
-    reason: "",
-    createdAt: now,
-  });
-
-  const scenes = new InMemoryRevisionedRepository<Scene>();
-  const candidates = new InMemoryRevisionedRepository<Candidate>();
-  const commits = new InMemoryRepository<NarrativeCommit>();
-  const events = new InMemoryEventStore();
-  await scenes.save(committedScene);
-  await candidates.save(candidate);
-
-  return {
-    scenes,
-    candidates,
-    commits,
-    events,
-    candidate,
-    validationRuns,
-    reviewDecision,
-  };
-}
-
-describe("commitCandidate", () => {
-  it("commits an approved candidate as a coherent canonical transition", async () => {
-    const context = await setup();
-    const commit = await commitCandidate({
-      repositories: {
-        scenes: context.scenes,
-        candidates: context.candidates,
-        canonicalFacts: new InMemoryRevisionedRepository<CanonicalFact>(),
-        stateRecords: new InMemoryRevisionedRepository<StateRecord>(),
-        narrativeCommits: context.commits,
-      },
-      eventStore: context.events,
-      input: {
-        commitId: "commit-1",
-        candidateId: context.candidate.id,
-        validationRuns: context.validationRuns,
-        reviewDecision: context.reviewDecision,
-        now: new Date("2026-10-03T00:00:00.000Z"),
-      },
-    });
-
-    const scene = await context.scenes.findById("scene-1");
-    const events = await context.events.listByNovel("novel-1");
-    expect(commit.status).toBe("committed");
-    expect(scene?.text).toBe("New text");
-    expect(events.map((event) => event.name)).toEqual(["SceneCommitted", "NarrativeCommitRecorded"]);
-  });
-
-  it("rejects a candidate based on an outdated scene revision", async () => {
-    const context = await setup();
-    await commitCandidate({
-      repositories: {
-        scenes: context.scenes,
-        candidates: context.candidates,
-        canonicalFacts: new InMemoryRevisionedRepository<CanonicalFact>(),
-        stateRecords: new InMemoryRevisionedRepository<StateRecord>(),
-        narrativeCommits: context.commits,
-      },
-      eventStore: context.events,
-      input: {
-        commitId: "commit-1",
-        candidateId: context.candidate.id,
-        validationRuns: context.validationRuns,
-        reviewDecision: context.reviewDecision,
-        now: new Date("2026-10-03T00:00:00.000Z"),
-      },
-    });
-
-    const staleCandidate = selectCandidate(
-      markCandidateValidated(
-        createCandidate({
-          id: "candidate-2",
-          taskId: "task-1",
-          novelId: "novel-1",
-          basedOnVersionSet: createVersionSet({
-            scene: createVersionReference("Scene", "scene-1", "scene-rev-2"),
-          }),
-          change: { type: "text", sceneId: "scene-1", text: "Stale text" },
-          createdAt: now,
-        }),
-        now,
-      ),
-      now,
-    );
-    const staleValidation = createValidationRun({
-      id: "validation-2",
-      candidateId: staleCandidate.id,
-      candidateRevisionId: staleCandidate.currentRevisionId,
-      validatorId: "text-validator",
-      outcome: "pass",
-      findings: [],
-      createdAt: now,
-    });
-    const staleReview = createReviewDecision({
-      id: "review-2",
-      candidateId: staleCandidate.id,
-      candidateRevisionId: staleCandidate.currentRevisionId,
-      decision: "approve",
-      decidedBy: "human",
-      actorId: "author-1",
-      reason: "",
-      createdAt: now,
-    });
-
-    await context.candidates.save(staleCandidate);
-    await expect(
-      commitCandidate({
-        repositories: {
-          scenes: context.scenes,
-          candidates: context.candidates,
-          canonicalFacts: new InMemoryRevisionedRepository<CanonicalFact>(),
-          stateRecords: new InMemoryRevisionedRepository<StateRecord>(),
-          narrativeCommits: context.commits,
-        },
-        eventStore: context.events,
-        input: {
-          commitId: "commit-2",
-          candidateId: staleCandidate.id,
-          validationRuns: [staleValidation],
-          reviewDecision: staleReview,
-          now: new Date("2026-10-04T00:00:00.000Z"),
-        },
-      }),
-    ).rejects.toThrow("Stale dependency: scene");
-
-    const failedCommit = await context.commits.findById("commit-2");
-    expect(failedCommit?.status).toBe("stale");
-  });
-
-  it("commits a canonical fact change", async () => {
-    const fact = createCanonicalFact({
+  const transaction = new InMemoryCommitTransaction();
+  await transaction.scenes.save(baseScene());
+  await transaction.canonicalFacts.save(
+    createCanonicalFact({
       id: "fact-1",
       novelId: "novel-1",
       type: "world_rule",
-      content: { rule: "Old rule" },
+      content: { rule: "old" },
       revisionId: "fact-rev-1",
-      commitId: "initial-commit",
+      commitId: "initial",
       createdAt: now,
-    });
-    const canonicalFacts = new InMemoryRevisionedRepository<CanonicalFact>();
-    await canonicalFacts.save(fact);
-    const evidence = approvedCandidate(
-      "candidate-canonical",
-      { type: "canonical_fact", canonicalFactId: fact.id, content: { rule: "New rule" } },
-      createVersionSet({
-        canonicalFact: createVersionReference("CanonicalFact", fact.id, fact.currentRevisionId),
-      }),
-    );
-    const scenes = new InMemoryRevisionedRepository<Scene>();
-    const candidates = new InMemoryRevisionedRepository<Candidate>();
-    const commits = new InMemoryRepository<NarrativeCommit>();
-    const events = new InMemoryEventStore();
-    await candidates.save(evidence.candidate);
-
-    const commit = await commitCandidate({
-      repositories: {
-        scenes,
-        candidates,
-        canonicalFacts,
-        stateRecords: new InMemoryRevisionedRepository<StateRecord>(),
-        narrativeCommits: commits,
-      },
-      eventStore: events,
-      input: {
-        commitId: "commit-canonical",
-        candidateId: evidence.candidate.id,
-        validationRuns: evidence.validationRuns,
-        reviewDecision: evidence.reviewDecision,
-        now: new Date("2026-10-03T00:00:00.000Z"),
-      },
-    });
-
-    expect(commit.status).toBe("committed");
-    expect((await canonicalFacts.findById(fact.id))?.content).toEqual({ rule: "New rule" });
-    expect((await events.listByNovel("novel-1")).map(event => event.name)).toEqual([
-      "CanonicalFactChanged",
-      "NarrativeCommitRecorded",
-    ]);
-  });
-
-  it("commits a position-aware state record change", async () => {
-    const record = createStateRecord({
+    }),
+  );
+  await transaction.stateRecords.save(
+    createStateRecord({
       id: "state-1",
       novelId: "novel-1",
       type: "character_state",
-      subjectId: "fact-1",
+      subjectId: "character-1",
       position: { sceneId: "scene-1", ordinal: 1 },
       content: { condition: "healthy" },
       revisionId: "state-rev-1",
-      commitId: "initial-commit",
+      commitId: "initial",
       createdAt: now,
-    });
-    const stateRecords = new InMemoryRevisionedRepository<StateRecord>();
-    await stateRecords.save(record);
-    const evidence = approvedCandidate(
-      "candidate-state",
-      {
-        type: "structured_state",
-        stateRecordId: record.id,
-        content: { condition: "injured" },
+    }),
+  );
+  return transaction;
+}
+
+function sceneChange(
+  payload: Record<string, unknown> = { text: "New text" },
+  subAddress?: string,
+): Change {
+  return createChange({
+    id: subAddress ? `change-scene-${subAddress}` : "change-scene",
+    sourceType: "candidate",
+    sourceReference: {
+      identity: "candidate-1",
+      version: "candidate-source-v1",
+      hash: hashContent("candidate source"),
+    },
+    targetAddress: { targetType: "manuscript", objectId: "scene-1", ...(subAddress ? { subAddress } : {}) },
+    payload,
+    basedOnVersionSet: createVersionSet({
+      scene: createVersionReference("Scene", "scene-1", "scene-rev-2"),
+    }),
+  });
+}
+
+function canonicalChange(): Change {
+  return createChange({
+    id: "change-fact",
+    sourceType: "candidate",
+    sourceReference: {
+      identity: "candidate-1",
+      version: "candidate-source-v1",
+      hash: hashContent("candidate source"),
+    },
+    targetAddress: { targetType: "canonical_fact", objectId: "fact-1" },
+    payload: { rule: "new" },
+    basedOnVersionSet: createVersionSet({
+      fact: createVersionReference("CanonicalFact", "fact-1", "fact-rev-1"),
+    }),
+  });
+}
+
+function stateChange(): Change {
+  return createChange({
+    id: "change-state",
+    sourceType: "candidate",
+    sourceReference: {
+      identity: "candidate-1",
+      version: "candidate-source-v1",
+      hash: hashContent("candidate source"),
+    },
+    targetAddress: { targetType: "story_state", objectId: "state-1" },
+    payload: { condition: "injured" },
+    basedOnVersionSet: createVersionSet({
+      state: createVersionReference("StateRecord", "state-1", "state-rev-1"),
+    }),
+  });
+}
+
+
+
+function deferred() {
+  let open!: () => void;
+  const promise = new Promise<void>(resolve => {
+    open = resolve;
+  });
+  return { promise, open };
+}
+
+function narrativeCommit(
+  id: string,
+  changeSetRevisionId: string,
+  sceneRevisionId = "scene-rev-2",
+): NarrativeCommit {
+  return createNarrativeCommit({
+    id,
+    novelId: "novel-1",
+    changeSetRevision: revisionWith([sceneChange()], changeSetRevisionId),
+    validationRuns: [validation("pass", changeSetRevisionId)],
+    reviewDecisions: reviewsFor([sceneChange()], changeSetRevisionId),
+    basedOnVersionSet: createVersionSet({
+      scene: createVersionReference("Scene", "scene-1", sceneRevisionId),
+    }),
+    createdAt: now,
+  });
+}
+
+function sceneEvent(eventId: string, revisionId: string) {
+  return createSceneCommittedEvent({
+    eventId,
+    novelId: "novel-1",
+    objectId: "scene-1",
+    revisionId,
+    commitId: "external-commit",
+    payload: { changeSetRevisionId: "external-cs-r1" },
+    occurredAt: now,
+  });
+}
+function revisionWith(changes: readonly Change[], revisionId = "cs-1-r1"): ChangeSetRevision {
+  const revision = createInitialChangeSetRevision({
+    revisionId,
+    changeSetId: "cs-1",
+    novelId: "novel-1",
+    createdAt: now,
+  });
+  return Object.freeze({ ...revision, changes: Object.freeze([...changes]) });
+}
+
+function validation(outcome: ValidationOutcome = "pass", revisionId = "cs-1-r1") {
+  return createValidationRun({
+    id: `validation-${revisionId}`,
+    changeSetRevisionId: revisionId,
+    planVersionId: "plan-v1",
+    validatorId: "basic-validator",
+    entryResults: [],
+    executionState: "completed",
+    outcome,
+    createdAt: now,
+  });
+}
+
+function scopeFor(change: Change): ApprovalScope {
+  const targetType = change.targetAddress.targetType;
+  return {
+    requirementDomain:
+      targetType === "canonical_fact"
+        ? "canon"
+        : targetType === "story_state"
+          ? "story_state"
+          : targetType,
+    targetType,
+    objectId: change.targetAddress.objectId,
+    ...(change.targetAddress.subAddress
+      ? { subAddress: change.targetAddress.subAddress }
+      : {}),
+  };
+}
+
+function reviewsFor(changes: readonly Change[], revisionId = "cs-1-r1"): ReviewDecision[] {
+  return changes.map((change, index) =>
+    createReviewDecision({
+      id: `review-${revisionId}-${index}`,
+      changeSetRevisionId: revisionId,
+      approvalScope: scopeFor(change),
+      decision: "approve",
+      decidedBy: "human",
+      actorId: "reviewer-1",
+      reason: "",
+      evidenceReferences: [`validation-${revisionId}`],
+      createdAt: now,
+    }),
+  );
+}
+
+function requirementsFor(changes: readonly Change[]) {
+  return changes.map(change => ({
+    approvalScope: scopeFor(change),
+    requirement: "t12-basic-approval",
+    requirementLevel: "not_required" as const,
+  }));
+}
+
+async function commit(
+  transaction: InMemoryCommitTransaction,
+  changes: readonly Change[],
+  options: {
+    revisionId?: string;
+    validationOutcome?: ValidationOutcome;
+    commitId?: string;
+    unresolvedConflict?: boolean;
+    stale?: boolean;
+    targetInvariantViolations?: readonly (
+      | string
+      | { message: string; evidenceReferences?: readonly string[] }
+    )[];
+  } = {},
+) {
+  const revisionId = options.revisionId ?? "cs-1-r1";
+  const revision = revisionWith(changes, revisionId);
+  return commitChangeSetRevision({
+    transaction,
+    input: {
+      commitId: options.commitId ?? "commit-1",
+      changeSetRevision: revision,
+      validationRuns: [validation(options.validationOutcome ?? "pass", revisionId)],
+      reviewDecisions: reviewsFor(changes, revisionId),
+      currentRevisionFacts: {
+        unresolvedConflict: options.unresolvedConflict ?? false,
+        stale: options.stale ?? false,
       },
-      createVersionSet({
-        stateRecord: createVersionReference("StateRecord", record.id, record.currentRevisionId),
+      targetInvariantViolations: options.targetInvariantViolations ?? [],
+      requiredApproval: false,
+      approvalScopeRequirements: requirementsFor(changes),
+      now,
+    },
+  });
+}
+
+describe("commitChangeSetRevision through InMemoryCommitTransaction", () => {
+  it("commits a text candidate source as a revision-bound coherent transition", async () => {
+    const transaction = await setup();
+
+    const result = await commit(transaction, [sceneChange()]);
+
+    expect(result.status).toBe("committed");
+    expect(result.changeSetRevisionId).toBe("cs-1-r1");
+    expect(result.validationRunIds).toEqual(["validation-cs-1-r1"]);
+    expect((await transaction.scenes.findById("scene-1"))?.text).toBe("New text");
+    expect((await transaction.narrativeCommits.listByNovel("novel-1")).map(entry => entry.status))
+      .toEqual(["committed"]);
+  });
+
+  it("blocks a stale base revision and leaves current, history, commit, and events unchanged", async () => {
+    const transaction = await setup();
+    await transaction.scenes.save(
+      commitSceneText({
+        scene: (await transaction.scenes.findById("scene-1"))!,
+        text: "Author changed it",
+        revisionId: "scene-rev-3",
+        commitId: "author-commit",
+        updatedAt: now,
       }),
     );
-    const candidates = new InMemoryRevisionedRepository<Candidate>();
-    const commits = new InMemoryRepository<NarrativeCommit>();
-    const events = new InMemoryEventStore();
-    await candidates.save(evidence.candidate);
 
-    await commitCandidate({
-      repositories: {
-        scenes: new InMemoryRevisionedRepository<Scene>(),
-        candidates,
-        canonicalFacts: new InMemoryRevisionedRepository<CanonicalFact>(),
-        stateRecords,
-        narrativeCommits: commits,
-      },
-      eventStore: events,
-      input: {
-        commitId: "commit-state",
-        candidateId: evidence.candidate.id,
-        validationRuns: evidence.validationRuns,
-        reviewDecision: evidence.reviewDecision,
-        now: new Date("2026-10-03T00:00:00.000Z"),
-      },
+    await expect(
+      commit(transaction, [sceneChange()], {
+        stale: true,
+        targetInvariantViolations: [
+          {
+            message: "candidate source is stale",
+            evidenceReferences: ["candidate-1:candidate-source-v1"],
+          },
+        ],
+      }),
+    ).rejects.toMatchObject({ name: "CommitGateBlockedError" });
+
+    expect((await transaction.scenes.findById("scene-1"))?.text).toBe("Author changed it");
+    expect(await transaction.scenes.getRevision("scene-1", "scene-rev-2:commit-1")).toBeUndefined();
+    expect(await transaction.narrativeCommits.listByNovel("novel-1")).toEqual([]);
+    expect(await transaction.eventStore.listByNovel("novel-1")).toEqual([]);
+  });
+
+  it("commits a canonical fact change", async () => {
+    const transaction = await setup();
+
+    await commit(transaction, [canonicalChange()]);
+
+    expect((await transaction.canonicalFacts.findById("fact-1"))?.content).toEqual({ rule: "new" });
+  });
+
+  it("commits a position-aware state record change", async () => {
+    const transaction = await setup();
+
+    await commit(transaction, [stateChange()]);
+
+    expect((await transaction.stateRecords.findById("state-1"))?.content).toEqual({
+      condition: "injured",
     });
-
-    expect((await stateRecords.findById(record.id))?.content).toEqual({ condition: "injured" });
-    expect((await events.listByNovel("novel-1")).map(event => event.name)).toEqual([
-      "CharacterStateChanged",
-      "NarrativeCommitRecorded",
-    ]);
   });
 
   it("commits local text and rebinds the target anchor", async () => {
-    const initial = createScene({
-      id: "scene-local",
-      novelId: "novel-1",
-      chapterId: "chapter-1",
-      title: "Local Text",
-      revisionId: "scene-rev-1",
-      commitId: "initial-commit",
-      createdAt: now,
-    });
-    const scene = commitSceneText({
-      scene: initial,
-      text: "First paragraph. Second paragraph. Third paragraph.",
-      spanAnchors: {
-        "span-2": {
-          anchorId: "span-2",
-          start: 17,
-          end: 34,
-          text: "Second paragraph.",
-          sourceContentHash: hashContent("Second paragraph."),
-        },
-      },
-      revisionId: "scene-rev-2",
-      commitId: "initial-commit",
-      updatedAt: now,
-    });
-    const scenes = new InMemoryRevisionedRepository<Scene>();
-    await scenes.save(scene);
-    const evidence = approvedCandidate(
-      "candidate-local",
-      {
-        type: "local_text",
-        sceneId: scene.id,
-        targetSpan: {
-          anchorId: "span-2",
-          text: "Second paragraph.",
-          sourceContentHash: hashContent("Second paragraph."),
-        },
-        replacement: "Changed paragraph.",
-      },
-      createVersionSet({
-        scene: createVersionReference("Scene", scene.id, scene.currentRevisionId),
-      }),
-    );
-    const candidates = new InMemoryRevisionedRepository<Candidate>();
-    const commits = new InMemoryRepository<NarrativeCommit>();
-    const events = new InMemoryEventStore();
-    await candidates.save(evidence.candidate);
+    const transaction = await setup();
 
-    await commitCandidate({
-      repositories: {
-        scenes,
-        candidates,
-        canonicalFacts: new InMemoryRevisionedRepository<CanonicalFact>(),
-        stateRecords: new InMemoryRevisionedRepository<StateRecord>(),
-        narrativeCommits: commits,
-      },
-      eventStore: events,
-      input: {
-        commitId: "commit-local",
-        candidateId: evidence.candidate.id,
-        validationRuns: evidence.validationRuns,
-        reviewDecision: evidence.reviewDecision,
-        now: new Date("2026-10-03T00:00:00.000Z"),
-      },
-    });
+    await commit(transaction, [
+      sceneChange(
+        {
+          targetSpan: {
+            anchorId: "middle",
+            text: "middle",
+            sourceContentHash: hashContent("middle"),
+          },
+          replacement: "core",
+        },
+        "middle",
+      ),
+    ]);
 
-    const committed = await scenes.findById(scene.id);
-    expect(committed?.text).toBe("First paragraph. Changed paragraph. Third paragraph.");
-    expect(committed?.spanAnchors["span-2"]).toMatchObject({
-      anchorId: "span-2",
-      text: "Changed paragraph.",
-      sourceContentHash: hashContent("Changed paragraph."),
+    const scene = await transaction.scenes.findById("scene-1");
+    expect(scene?.text).toBe("Alpha core Omega.");
+    expect(scene?.spanAnchors.middle).toMatchObject({
+      start: 6,
+      end: 10,
+      text: "core",
+      sourceContentHash: hashContent("core"),
     });
   });
 
   it("commits composite text, state, and canonical changes in one transition", async () => {
-    const initial = createScene({
-      id: "scene-composite",
-      novelId: "novel-1",
-      chapterId: "chapter-1",
-      title: "Composite",
-      revisionId: "scene-rev-1",
-      commitId: "initial-commit",
-      createdAt: now,
-    });
-    const scene = commitSceneText({
-      scene: initial,
-      text: "Old scene",
-      revisionId: "scene-rev-2",
-      commitId: "initial-commit",
-      updatedAt: now,
-    });
-    const fact = createCanonicalFact({
-      id: "fact-composite",
-      novelId: "novel-1",
-      type: "character_profile",
-      content: { name: "Old name" },
-      revisionId: "fact-rev-1",
-      commitId: "initial-commit",
-      createdAt: now,
-    });
-    const record = createStateRecord({
-      id: "state-composite",
-      novelId: "novel-1",
-      type: "character_state",
-      subjectId: fact.id,
-      position: { sceneId: scene.id, ordinal: 1 },
-      content: { condition: "healthy" },
-      revisionId: "state-rev-1",
-      commitId: "initial-commit",
-      createdAt: now,
-    });
+    const transaction = await setup();
 
-    const scenes = new InMemoryRevisionedRepository<Scene>();
-    const canonicalFacts = new InMemoryRevisionedRepository<CanonicalFact>();
-    const stateRecords = new InMemoryRevisionedRepository<StateRecord>();
-    const candidates = new InMemoryRevisionedRepository<Candidate>();
-    const commits = new InMemoryRepository<NarrativeCommit>();
-    const events = new InMemoryEventStore();
-    await scenes.save(scene);
-    await canonicalFacts.save(fact);
-    await stateRecords.save(record);
+    const result = await commit(transaction, [sceneChange(), stateChange(), canonicalChange()]);
 
-    const evidence = approvedCandidate(
-      "candidate-composite",
-      {
-        type: "composite",
-        changes: [
-          { type: "text", sceneId: scene.id, text: "New scene" },
-          {
-            type: "canonical_fact",
-            canonicalFactId: fact.id,
-            content: { name: "New name" },
-          },
-          {
-            type: "structured_state",
-            stateRecordId: record.id,
-            content: { condition: "injured" },
-          },
-        ],
-      },
-      createVersionSet({
-        scene: createVersionReference("Scene", scene.id, scene.currentRevisionId),
-        canonicalFact: createVersionReference("CanonicalFact", fact.id, fact.currentRevisionId),
-        stateRecord: createVersionReference("StateRecord", record.id, record.currentRevisionId),
-      }),
-    );
-    await candidates.save(evidence.candidate);
-
-    const commit = await commitCandidate({
-      repositories: {
-        scenes,
-        candidates,
-        canonicalFacts,
-        stateRecords,
-        narrativeCommits: commits,
-      },
-      eventStore: events,
-      input: {
-        commitId: "commit-composite",
-        candidateId: evidence.candidate.id,
-        validationRuns: evidence.validationRuns,
-        reviewDecision: evidence.reviewDecision,
-        now: new Date("2026-10-03T00:00:00.000Z"),
-      },
+    expect(result.status).toBe("committed");
+    expect((await transaction.scenes.findById("scene-1"))?.text).toBe("New text");
+    expect((await transaction.stateRecords.findById("state-1"))?.content).toEqual({
+      condition: "injured",
     });
-
-    expect(commit.status).toBe("committed");
-    expect(Object.keys(commit.resultingVersionSet ?? {})).toHaveLength(3);
-    expect((await scenes.findById(scene.id))?.text).toBe("New scene");
-    expect((await canonicalFacts.findById(fact.id))?.content).toEqual({ name: "New name" });
-    expect((await stateRecords.findById(record.id))?.content).toEqual({ condition: "injured" });
-    expect((await events.listByNovel("novel-1")).map(event => event.name)).toEqual([
+    expect((await transaction.canonicalFacts.findById("fact-1"))?.content).toEqual({ rule: "new" });
+    expect((await transaction.eventStore.listByNovel("novel-1")).map(event => event.name)).toEqual([
       "SceneCommitted",
-      "CanonicalFactChanged",
       "CharacterStateChanged",
+      "CanonicalFactChanged",
       "NarrativeCommitRecorded",
     ]);
   });
 
-  it("records a failed commit when a version dependency object is missing", async () => {
-    const evidence = approvedCandidate(
-      "candidate-missing-dependency",
-      { type: "text", sceneId: "scene-1", text: "New text" },
-      createVersionSet({
+  it("rejects failed validation without writing a commit", async () => {
+    const transaction = await setup();
+
+    await expect(
+      commit(transaction, [sceneChange()], { validationOutcome: "fail" }),
+    ).rejects.toThrow();
+
+    expect((await transaction.scenes.findById("scene-1"))?.text).toBe("Alpha middle Omega.");
+    expect(await transaction.narrativeCommits.listByNovel("novel-1")).toEqual([]);
+    expect(await transaction.eventStore.listByNovel("novel-1")).toEqual([]);
+  });
+
+  it("rolls back current, revision history, NarrativeCommit, and events when an operation fails", async () => {
+    const transaction = await setup();
+    const original = (await transaction.scenes.findById("scene-1"))!;
+    const next = commitSceneText({
+      scene: original,
+      text: "Must roll back",
+      revisionId: "scene-rev-3:rollback",
+      commitId: "commit-rollback",
+      updatedAt: now,
+    });
+    const revision = revisionWith([sceneChange()], "cs-rollback-r1");
+    const pending: NarrativeCommit = createNarrativeCommit({
+      id: "commit-rollback",
+      novelId: "novel-1",
+      changeSetRevision: revision,
+      validationRuns: [validation("pass", "cs-rollback-r1")],
+      reviewDecisions: reviewsFor([sceneChange()], "cs-rollback-r1"),
+      basedOnVersionSet: createVersionSet({
         scene: createVersionReference("Scene", "scene-1", "scene-rev-2"),
       }),
-    );
-    const candidates = new InMemoryRevisionedRepository<Candidate>();
-    const commits = new InMemoryRepository<NarrativeCommit>();
-    await candidates.save(evidence.candidate);
-
-    await expect(
-      commitCandidate({
-        repositories: {
-          scenes: new InMemoryRevisionedRepository<Scene>(),
-          candidates,
-          canonicalFacts: new InMemoryRevisionedRepository<CanonicalFact>(),
-          stateRecords: new InMemoryRevisionedRepository<StateRecord>(),
-          narrativeCommits: commits,
-        },
-        eventStore: new InMemoryEventStore(),
-        input: {
-          commitId: "commit-missing",
-          candidateId: evidence.candidate.id,
-          validationRuns: evidence.validationRuns,
-          reviewDecision: evidence.reviewDecision,
-          now: new Date("2026-10-03T00:00:00.000Z"),
-        },
-      }),
-    ).rejects.toThrow("Missing version dependency object: scene");
-
-    expect((await commits.findById("commit-missing"))?.status).toBe("failed");
-  });
-
-  it("records a failed commit when a repository write fails", async () => {
-    const initial = createScene({
-      id: "scene-repo-failure",
-      novelId: "novel-1",
-      chapterId: "chapter-1",
-      title: "Repository Failure",
-      revisionId: "scene-rev-1",
-      commitId: "initial-commit",
       createdAt: now,
     });
-    const scene = commitSceneText({
-      scene: initial,
-      text: "Old text",
-      revisionId: "scene-rev-2",
-      commitId: "initial-commit",
-      updatedAt: now,
-    });
-    const scenes = new FailingSceneRepository();
-    await scenes.save(scene);
-    const evidence = approvedCandidate(
-      "candidate-repo-failure",
-      { type: "text", sceneId: scene.id, text: "New text" },
-      createVersionSet({
-        scene: createVersionReference("Scene", scene.id, scene.currentRevisionId),
-      }),
-    );
-    const candidates = new InMemoryRevisionedRepository<Candidate>();
-    const commits = new InMemoryRepository<NarrativeCommit>();
-    await candidates.save(evidence.candidate);
-    scenes.failWrites = true;
 
     await expect(
-      commitCandidate({
-        repositories: {
-          scenes,
-          candidates,
-          canonicalFacts: new InMemoryRevisionedRepository<CanonicalFact>(),
-          stateRecords: new InMemoryRevisionedRepository<StateRecord>(),
-          narrativeCommits: commits,
-        },
-        eventStore: new InMemoryEventStore(),
-        input: {
-          commitId: "commit-repo-failure",
-          candidateId: evidence.candidate.id,
-          validationRuns: evidence.validationRuns,
-          reviewDecision: evidence.reviewDecision,
-          now: new Date("2026-10-03T00:00:00.000Z"),
-        },
+      transaction.run(async work => {
+        await work.repositories.scenes.saveSceneIfCurrent(original.currentRevisionId, next);
+        await work.repositories.narrativeCommits.saveNarrativeCommitIfAbsent(pending);
+        await work.eventStore.appendEventsIfAbsent([
+          createSceneCommittedEvent({
+            eventId: "event:rollback",
+            novelId: "novel-1",
+            objectId: "scene-1",
+            revisionId: next.currentRevisionId,
+            commitId: "commit-rollback",
+            payload: { changeSetRevisionId: revision.revisionId },
+            occurredAt: now,
+          }),
+        ]);
+        throw new Error("operation failed");
       }),
-    ).rejects.toThrow("scene write failed");
+    ).rejects.toThrow("operation failed");
 
-    const failedCommit = await commits.findById("commit-repo-failure");
-    expect(failedCommit?.status).toBe("failed");
-    expect(failedCommit?.failureReason).toBe("scene write failed");
+    expect((await transaction.scenes.findById("scene-1"))?.currentRevisionId).toBe("scene-rev-2");
+    expect(await transaction.scenes.getRevision("scene-1", "scene-rev-3:rollback")).toBeUndefined();
+    expect(await transaction.narrativeCommits.findById("commit-rollback")).toBeUndefined();
+    expect(await transaction.eventStore.listByNovel("novel-1")).toEqual([]);
   });
 
-  it("restores canonical state and records failure when event persistence fails", async () => {
-    const initial = createScene({
-      id: "scene-event-failure",
+  it("keeps raw NarrativeCommit saves idempotent for an identical entity", async () => {
+    const transaction = await setup();
+    const first = narrativeCommit("commit-raw-id", "cs-raw-id-r1");
+
+    await transaction.narrativeCommits.save(first);
+    await expect(transaction.narrativeCommits.save(first)).resolves.toBeUndefined();
+
+    expect(await transaction.narrativeCommits.findById("commit-raw-id")).toEqual(first);
+    expect(await transaction.narrativeCommits.listByNovel("novel-1")).toHaveLength(1);
+  });
+
+  it("keeps raw NarrativeCommit saves idempotent when only property insertion order differs", async () => {
+    const transaction = await setup();
+    const first = narrativeCommit("commit-raw-order", "cs-raw-order-r1");
+    const reordered: NarrativeCommit = {
+      updatedAt: first.updatedAt,
+      createdAt: first.createdAt,
+      status: first.status,
+      basedOnVersionSet: {
+        scene: {
+          revisionId: first.basedOnVersionSet.scene?.revisionId ?? "",
+          objectId: first.basedOnVersionSet.scene?.objectId ?? "",
+          aggregateType: first.basedOnVersionSet.scene?.aggregateType ?? "Scene",
+        },
+      },
+      reviewDecisionIds: [...first.reviewDecisionIds],
+      validationRunIds: [...first.validationRunIds],
+      changeSetRevisionId: first.changeSetRevisionId,
+      novelId: first.novelId,
+      id: first.id,
+    };
+
+    await transaction.narrativeCommits.save(first);
+    await expect(transaction.narrativeCommits.save(reordered)).resolves.toBeUndefined();
+
+    expect(await transaction.narrativeCommits.findById("commit-raw-order")).toEqual(first);
+    expect(await transaction.narrativeCommits.listByNovel("novel-1")).toHaveLength(1);
+  });
+  it("rejects raw NarrativeCommit saves that reuse an id with different content and preserves the original", async () => {
+    const transaction = await setup();
+    const first = narrativeCommit("commit-raw-id-conflict", "cs-raw-id-conflict-r1");
+    const different = { ...first, changeSetRevisionId: "cs-raw-id-conflict-r2" };
+
+    await transaction.narrativeCommits.save(first);
+    await expect(transaction.narrativeCommits.save(different)).rejects.toMatchObject({
+      name: "CommitConflictError",
+      conflictType: "narrative_commit_id",
+    });
+
+    expect(await transaction.narrativeCommits.findById("commit-raw-id-conflict")).toEqual(first);
+  });
+
+  it("rejects raw NarrativeCommit saves that reuse an id with a different status and preserves the original", async () => {
+    const transaction = await setup();
+    const first = narrativeCommit("commit-raw-status", "cs-raw-status-r1");
+    const differentStatus = { ...first, status: "failed" as const };
+
+    await transaction.narrativeCommits.save(first);
+    await expect(transaction.narrativeCommits.save(differentStatus)).rejects.toMatchObject({
+      name: "CommitConflictError",
+      conflictType: "narrative_commit_id",
+    });
+
+    expect(await transaction.narrativeCommits.findById("commit-raw-status")).toEqual(first);
+    expect((await transaction.narrativeCommits.findById("commit-raw-status"))?.status).toBe("pending");
+  });
+  it("rejects raw NarrativeCommit saves with a different id and an already used revision", async () => {
+    const transaction = await setup();
+    const first = narrativeCommit("commit-raw-revision-1", "cs-raw-revision-r1");
+    const differentId = { ...first, id: "commit-raw-revision-2" };
+
+    await transaction.narrativeCommits.save(first);
+    await expect(transaction.narrativeCommits.save(differentId)).rejects.toMatchObject({
+      name: "CommitConflictError",
+      conflictType: "narrative_commit_revision",
+    });
+
+    expect(await transaction.narrativeCommits.findById("commit-raw-revision-1")).toEqual(first);
+    expect(await transaction.narrativeCommits.findById("commit-raw-revision-2")).toBeUndefined();
+  });
+  it("enforces NarrativeCommit id and change set revision uniqueness in the transaction", async () => {
+    const transaction = await setup();
+    const revision = revisionWith([sceneChange()], "cs-unique-r1");
+    const first = createNarrativeCommit({
+      id: "commit-unique-1",
       novelId: "novel-1",
-      chapterId: "chapter-1",
-      title: "Event Failure",
-      revisionId: "scene-rev-1",
-      commitId: "initial-commit",
+      changeSetRevision: revision,
+      validationRuns: [validation("pass", "cs-unique-r1")],
+      reviewDecisions: reviewsFor([sceneChange()], "cs-unique-r1"),
       createdAt: now,
     });
-    const scene = commitSceneText({
-      scene: initial,
-      text: "Old text",
-      revisionId: "scene-rev-2",
-      commitId: "initial-commit",
-      updatedAt: now,
-    });
-    const scenes = new InMemoryRevisionedRepository<Scene>();
-    await scenes.save(scene);
-    const evidence = approvedCandidate(
-      "candidate-event-failure",
-      { type: "text", sceneId: scene.id, text: "New text" },
-      createVersionSet({
-        scene: createVersionReference("Scene", scene.id, scene.currentRevisionId),
-      }),
+    const duplicateRevision = { ...first, id: "commit-unique-2" };
+
+    await transaction.run(work =>
+      work.repositories.narrativeCommits.saveNarrativeCommitIfAbsent(first),
     );
-    const candidates = new InMemoryRevisionedRepository<Candidate>();
-    const commits = new InMemoryRepository<NarrativeCommit>();
-    await candidates.save(evidence.candidate);
-
     await expect(
-      commitCandidate({
-        repositories: {
-          scenes,
-          candidates,
-          canonicalFacts: new InMemoryRevisionedRepository<CanonicalFact>(),
-          stateRecords: new InMemoryRevisionedRepository<StateRecord>(),
-          narrativeCommits: commits,
-        },
-        eventStore: new FailingEventStore(),
-        input: {
-          commitId: "commit-event-failure",
-          candidateId: evidence.candidate.id,
-          validationRuns: evidence.validationRuns,
-          reviewDecision: evidence.reviewDecision,
-          now: new Date("2026-10-03T00:00:00.000Z"),
-        },
-      }),
-    ).rejects.toThrow("event write failed");
+      transaction.run(work =>
+        work.repositories.narrativeCommits.saveNarrativeCommitIfAbsent(duplicateRevision),
+      ),
+    ).rejects.toThrow("NarrativeCommit changeSetRevisionId already exists");
 
-    const failedCommit = await commits.findById("commit-event-failure");
-    expect(failedCommit?.status).toBe("failed");
-    expect(failedCommit?.failureReason).toBe("event write failed");
-    expect((await scenes.findById(scene.id))?.text).toBe("Old text");
+    expect((await transaction.narrativeCommits.listByNovel("novel-1")).map(entry => entry.id))
+      .toEqual(["commit-unique-1"]);
   });
 
-  it("rejects unsupported version dependencies as unsupported rather than stale", async () => {
-    const evidence = approvedCandidate(
-      "candidate-unsupported",
-      { type: "text", sceneId: "scene-1", text: "New text" },
-      createVersionSet({
-        novel: createVersionReference("Novel", "novel-1", "novel-rev-1"),
+  it("reports unsupported based-on dependencies as controlled OCC blockers", async () => {
+    const transaction = await setup();
+    const unsupported = createChange({
+      id: "change-unsupported",
+      sourceType: "candidate",
+      sourceReference: {
+        identity: "candidate-1",
+        version: "candidate-source-v1",
+        hash: hashContent("candidate source"),
+      },
+      targetAddress: { targetType: "manuscript", objectId: "scene-1" },
+      payload: { text: "New text" },
+      basedOnVersionSet: createVersionSet({
+        candidate: {
+          aggregateType: "Candidate",
+          objectId: "candidate-1",
+          revisionId: "candidate-source-v1",
+        } as VersionReference,
       }),
+    });
+
+    const caught = await commit(transaction, [unsupported]).then(
+      () => undefined,
+      (error: unknown) => error,
     );
-    const candidates = new InMemoryRevisionedRepository<Candidate>();
-    const commits = new InMemoryRepository<NarrativeCommit>();
-    await candidates.save(evidence.candidate);
 
-    await expect(
-      commitCandidate({
-        repositories: {
-          scenes: new InMemoryRevisionedRepository<Scene>(),
-          candidates,
-          canonicalFacts: new InMemoryRevisionedRepository<CanonicalFact>(),
-          stateRecords: new InMemoryRevisionedRepository<StateRecord>(),
-          narrativeCommits: commits,
-        },
-        eventStore: new InMemoryEventStore(),
-        input: {
-          commitId: "commit-unsupported",
-          candidateId: evidence.candidate.id,
-          validationRuns: evidence.validationRuns,
-          reviewDecision: evidence.reviewDecision,
-          now: new Date("2026-10-03T00:00:00.000Z"),
-        },
+    expect(caught).toMatchObject({ name: "CommitGateBlockedError" });
+    expect((await transaction.scenes.findById("scene-1"))?.text).toBe("Alpha middle Omega.");
+    expect(await transaction.eventStore.listByNovel("novel-1")).toEqual([]);
+  });
+  it("serializes concurrent transactions in FIFO order and keeps successful A after B CAS rollback", async () => {
+    const transaction = await setup();
+    const original = (await transaction.scenes.findById("scene-1"))!;
+    const nextA = commitSceneText({
+      scene: original,
+      text: "A committed text",
+      revisionId: "scene-rev-2:commit-a",
+      commitId: "commit-a",
+      updatedAt: now,
+    });
+    const nextB = commitSceneText({
+      scene: original,
+      text: "B must not commit",
+      revisionId: "scene-rev-2:commit-b",
+      commitId: "commit-b",
+      updatedAt: now,
+    });
+    const commitA = markNarrativeCommitCommitted({
+      commit: narrativeCommit("commit-a", "cs-a-r1"),
+      resultingVersionSet: createVersionSet({
+        scene: createVersionReference("Scene", "scene-1", "scene-rev-2:commit-a"),
       }),
-    ).rejects.toThrow("Unsupported version dependency type: Novel");
+      committedAt: now,
+    });
+    const aStarted = deferred();
+    const releaseA = deferred();
+    const releaseB = deferred();
 
-    expect((await commits.findById("commit-unsupported"))?.status).toBe("failed");
+    const a = transaction.run(async work => {
+      aStarted.open();
+      await releaseA.promise;
+      await work.repositories.scenes.saveSceneIfCurrent(original.currentRevisionId, nextA);
+      await work.repositories.narrativeCommits.saveNarrativeCommitIfAbsent(commitA);
+      await work.eventStore.appendEventsIfAbsent([
+        sceneEvent("event:commit-a", "scene-rev-2:commit-a"),
+      ]);
+      return "A";
+    });
+    await aStarted.promise;
+
+    const b = transaction.run(async work => {
+      await releaseB.promise;
+      await work.repositories.scenes.saveSceneIfCurrent(original.currentRevisionId, nextB);
+    });
+
+    releaseA.open();
+    await expect(a).resolves.toBe("A");
+    releaseB.open();
+    await expect(b).rejects.toMatchObject({
+      name: "CommitConflictError",
+      conflictType: "cas_revision",
+    });
+
+    expect((await transaction.scenes.findById("scene-1"))?.text).toBe("A committed text");
+    expect(await transaction.scenes.getRevision("scene-1", "scene-rev-2:commit-a")).toBeDefined();
+    expect((await transaction.narrativeCommits.findById("commit-a"))?.status).toBe("committed");
+    expect((await transaction.eventStore.listByNovel("novel-1")).map(event => event.eventId)).toEqual([
+      "event:commit-a",
+    ]);
+  });
+
+  it("keeps external save and append outside a failing transaction and preserves their committed writes", async () => {
+    const dependencies = createInMemoryEngineDependencies();
+    await dependencies.scenes.save(baseScene());
+    const transaction = dependencies.commitTransaction;
+    const original = (await dependencies.scenes.findById("scene-1"))!;
+    const next = commitSceneText({
+      scene: original,
+      text: "Transaction write",
+      revisionId: "scene-rev-2:transaction",
+      commitId: "transaction",
+      updatedAt: now,
+    });
+    const externalScene = commitSceneText({
+      scene: original,
+      text: "External write",
+      revisionId: "scene-rev-2:external",
+      commitId: "external",
+      updatedAt: now,
+    });
+    const started = deferred();
+    const release = deferred();
+    let externalWritesFinished = false;
+
+    const failing = transaction.run(async work => {
+      started.open();
+      await release.promise;
+      await work.repositories.scenes.saveSceneIfCurrent(original.currentRevisionId, next);
+      throw new Error("transaction must roll back");
+    });
+    await started.promise;
+
+    const externalSave = dependencies.scenes.save(externalScene).then(() => {
+      externalWritesFinished = true;
+    });
+    const externalAppend = dependencies.eventStore
+      .append(sceneEvent("event:external", "scene-rev-2:external"))
+      .then(() => {
+        externalWritesFinished = true;
+      });
+    const genericSave = dependencies.generationTasks
+      .save(
+        createGenerationTask({
+          id: "task-external",
+          novelId: "novel-1",
+          operation: "rewrite",
+          targetSceneId: "scene-1",
+          intent: "External write",
+          basedOnVersionSet: createVersionSet({
+            scene: createVersionReference("Scene", "scene-1", "scene-rev-2"),
+          }),
+          createdAt: now,
+        }),
+      )
+      .then(() => {
+        externalWritesFinished = true;
+      });
+
+    await Promise.resolve();
+    expect(externalWritesFinished).toBe(false);
+
+    release.open();
+    await expect(failing).rejects.toThrow("transaction must roll back");
+    await Promise.all([externalSave, externalAppend, genericSave]);
+
+    expect((await dependencies.scenes.findById("scene-1"))?.text).toBe("External write");
+    expect(await dependencies.scenes.getRevision("scene-1", "scene-rev-2:transaction")).toBeUndefined();
+    expect(await dependencies.scenes.getRevision("scene-1", "scene-rev-2:external")).toBeDefined();
+    expect((await dependencies.eventStore.listByNovel("novel-1")).map(event => event.eventId)).toEqual([
+      "event:external",
+    ]);
+    expect(await dependencies.generationTasks.findById("task-external")).toBeDefined();
+  });
+
+  it("rejects CAS revision conflicts with a typed commit conflict", async () => {
+    const transaction = await setup();
+    const original = (await transaction.scenes.findById("scene-1"))!;
+    const caught = await transaction
+      .run(work =>
+        work.repositories.scenes.saveSceneIfCurrent(
+          "wrong-revision",
+          commitSceneText({
+            scene: original,
+            text: "Must fail",
+            revisionId: "scene-rev-2:cas",
+            commitId: "commit-cas",
+            updatedAt: now,
+          }),
+        ),
+      )
+      .then(() => undefined, (error: unknown) => error);
+
+    expect(caught).toMatchObject({ name: "CommitConflictError", conflictType: "cas_revision" });
+  });
+
+  it("rejects NarrativeCommit status CAS conflicts with a typed commit conflict", async () => {
+    const transaction = await setup();
+    const pending = narrativeCommit("commit-status", "cs-status-r1");
+    await transaction.narrativeCommits.save(pending);
+    const failed = markNarrativeCommitFailed({
+      commit: pending,
+      reason: "failure",
+      failedAt: now,
+    });
+    const caught = await transaction
+      .run(work =>
+        work.repositories.narrativeCommits.saveNarrativeCommitIfCurrent("committed", failed),
+      )
+      .then(() => undefined, (error: unknown) => error);
+
+    expect(caught).toMatchObject({
+      name: "CommitConflictError",
+      conflictType: "cas_commit_status",
+    });
+  });
+
+  it("rejects duplicate NarrativeCommit ids with a typed commit conflict", async () => {
+    const transaction = await setup();
+    const first = narrativeCommit("commit-duplicate-id", "cs-id-r1");
+    const duplicateId = { ...first, changeSetRevisionId: "cs-id-r2" };
+    await transaction.narrativeCommits.save(first);
+    const caught = await transaction
+      .run(work => work.repositories.narrativeCommits.saveNarrativeCommitIfAbsent(duplicateId))
+      .then(() => undefined, (error: unknown) => error);
+
+    expect(caught).toMatchObject({
+      name: "CommitConflictError",
+      conflictType: "narrative_commit_id",
+    });
+  });
+
+  it("rejects duplicate NarrativeCommit revisions with a typed commit conflict", async () => {
+    const transaction = await setup();
+    const first = narrativeCommit("commit-revision-1", "cs-revision-r1");
+    const duplicateRevision = { ...first, id: "commit-revision-2" };
+    await transaction.narrativeCommits.save(first);
+    const caught = await transaction
+      .run(work =>
+        work.repositories.narrativeCommits.saveNarrativeCommitIfAbsent(duplicateRevision),
+      )
+      .then(() => undefined, (error: unknown) => error);
+
+    expect(caught).toMatchObject({
+      name: "CommitConflictError",
+      conflictType: "narrative_commit_revision",
+    });
+  });
+
+  it("rejects duplicate event ids with a typed commit conflict", async () => {
+    const transaction = await setup();
+    await transaction.eventStore.append(sceneEvent("event:duplicate", "scene-rev-2"));
+    const caught = await transaction
+      .run(work =>
+        work.eventStore.appendEventsIfAbsent([
+          sceneEvent("event:duplicate", "scene-rev-2:other"),
+        ]),
+      )
+      .then(() => undefined, (error: unknown) => error);
+
+    expect(caught).toMatchObject({
+      name: "CommitConflictError",
+      conflictType: "duplicate_event_id",
+    });
+  });
+  it("supports reentrant nested transaction savepoints without deadlocks", async () => {
+    const transaction = await setup();
+    const original = (await transaction.scenes.findById("scene-1"))!;
+    const outerNext = commitSceneText({
+      scene: original,
+      text: "Outer transaction write",
+      revisionId: "scene-rev-2:outer",
+      commitId: "outer",
+      updatedAt: now,
+    });
+    const nestedNext = commitSceneText({
+      scene: outerNext,
+      text: "Nested transaction write",
+      revisionId: "scene-rev-2:outer:nested",
+      commitId: "nested",
+      updatedAt: now,
+    });
+
+    await transaction.run(async work => {
+      await work.repositories.scenes.saveSceneIfCurrent(original.currentRevisionId, outerNext);
+      await transaction.run(async nestedWork => {
+        await nestedWork.repositories.scenes.saveSceneIfCurrent(
+          outerNext.currentRevisionId,
+          nestedNext,
+        );
+      });
+    });
+
+    expect((await transaction.scenes.findById("scene-1"))?.text).toBe("Nested transaction write");
+    expect(await transaction.scenes.getRevision("scene-1", "scene-rev-2:outer")).toBeDefined();
+    expect(await transaction.scenes.getRevision("scene-1", "scene-rev-2:outer:nested")).toBeDefined();
+  });
+
+  it("rolls back only a failed nested savepoint and preserves the outer write", async () => {
+    const transaction = await setup();
+    const original = (await transaction.scenes.findById("scene-1"))!;
+    const outerNext = commitSceneText({
+      scene: original,
+      text: "Outer savepoint write",
+      revisionId: "scene-rev-2:outer-savepoint",
+      commitId: "outer-savepoint",
+      updatedAt: now,
+    });
+    const nestedNext = commitSceneText({
+      scene: outerNext,
+      text: "Nested savepoint write",
+      revisionId: "scene-rev-2:outer-savepoint:nested",
+      commitId: "nested-savepoint",
+      updatedAt: now,
+    });
+    const nestedCommit = narrativeCommit("commit-nested-savepoint", "cs-nested-savepoint-r1");
+
+    await transaction.run(async work => {
+      await work.repositories.scenes.saveSceneIfCurrent(original.currentRevisionId, outerNext);
+      await transaction.run(async nestedWork => {
+        await nestedWork.repositories.scenes.saveSceneIfCurrent(
+          outerNext.currentRevisionId,
+          nestedNext,
+        );
+        await nestedWork.repositories.narrativeCommits.saveNarrativeCommitIfAbsent(nestedCommit);
+        await nestedWork.eventStore.appendEventsIfAbsent([
+          sceneEvent("event:nested-savepoint", "scene-rev-2:outer-savepoint:nested"),
+        ]);
+        throw new Error("nested savepoint must roll back");
+      }).then(
+        () => undefined,
+        (error: unknown) => {
+          expect(error).toBeInstanceOf(Error);
+          expect((error as Error).message).toBe("nested savepoint must roll back");
+        },
+      );
+    });
+
+    expect((await transaction.scenes.findById("scene-1"))?.text).toBe("Outer savepoint write");
+    expect(await transaction.scenes.getRevision("scene-1", "scene-rev-2:outer-savepoint")).toBeDefined();
+    expect(
+      await transaction.scenes.getRevision("scene-1", "scene-rev-2:outer-savepoint:nested"),
+    ).toBeUndefined();
+    expect(await transaction.narrativeCommits.findById("commit-nested-savepoint")).toBeUndefined();
+    expect(await transaction.eventStore.listByNovel("novel-1")).toEqual([]);
+  });
+
+  it("probes FIFO entry order directly while the first transaction is active", async () => {
+    const transaction = await setup();
+    const order: string[] = [];
+    const started = deferred();
+    const release = deferred();
+
+    const first = transaction.run(async () => {
+      order.push("first");
+      started.open();
+      await release.promise;
+      return "first";
+    });
+    await started.promise;
+
+    const second = transaction.run(async () => {
+      order.push("second");
+      return "second";
+    });
+    const third = transaction.run(async () => {
+      order.push("third");
+      return "third";
+    });
+
+    await Promise.resolve();
+    expect(order).toEqual(["first"]);
+
+    release.open();
+    await expect(Promise.all([first, second, third])).resolves.toEqual([
+      "first",
+      "second",
+      "third",
+    ]);
+    expect(order).toEqual(["first", "second", "third"]);
+  });
+  it("rejects raw external writes from inside the active transaction", async () => {
+    const transaction = await setup();
+    const original = (await transaction.scenes.findById("scene-1"))!;
+    await expect(
+      transaction.run(async () => {
+        await expect(
+          transaction.scenes.save(
+            commitSceneText({
+              scene: original,
+              text: "Raw write",
+              revisionId: "scene-rev-2:raw",
+              commitId: "raw",
+              updatedAt: now,
+            }),
+          ),
+        ).rejects.toMatchObject({
+          name: "CommitConflictError",
+          conflictType: "raw_write_in_transaction",
+        });
+      }),
+    ).resolves.toBeUndefined();
+    expect(await transaction.scenes.getRevision("scene-1", "scene-rev-2:raw")).toBeUndefined();
   });
 });

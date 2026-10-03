@@ -1,4 +1,4 @@
-import Fastify, { type FastifyInstance } from "fastify";
+import type { FastifyInstance } from "fastify";
 import { z } from "zod";
 import type { Repository, RevisionedRepository } from "../shared/application/repository";
 import type { VersionSet } from "../shared/domain/versioning";
@@ -11,38 +11,55 @@ import {
   createGenerationTask,
   startGenerationTask,
 } from "../production/domain/generationTask";
-import type { Candidate } from "../production/domain/candidate";
-import {
-  createCandidate,
-  markCandidateValidated,
-  selectCandidate,
+import type {
+  Candidate,
+  CandidateAtomicChange,
 } from "../production/domain/candidate";
+import { createCandidate } from "../production/domain/candidate";
 import {
-  createValidationRun,
-  type ValidationRun,
-} from "../production/domain/validationRun";
-import type { ReviewDecision } from "../production/domain/reviewDecision";
-import { createReviewDecision } from "../production/domain/reviewDecision";
+  assertNoDuplicateTargets,
+  createChange,
+  type Change,
+  type ChangeSourceType,
+} from "../production/domain/change";
+import {
+  createInitialChangeSetRevision,
+  type ChangeSetRevision,
+} from "../production/domain/changeSetRevision";
+import { validateCandidate } from "../production/application/validateCandidate";
+import {
+  approvalScopeKey,
+  createReviewDecision,
+  type ApprovalScope,
+  type ReviewDecision,
+} from "../production/domain/reviewDecision";
 import type { CanonicalFact } from "../narrative/canon/domain/canonicalFact";
 import type { StateRecord } from "../narrative/state/domain/stateRecord";
 import type { NarrativeCommit } from "../safety/domain/narrativeCommit";
 import type { EventStore } from "../safety/infrastructure/eventStore";
 import type { RuntimeAdapter } from "../production/runtime/runtimeAdapter";
-import { validateCandidate } from "../production/application/validateCandidate";
-import { commitCandidate } from "../safety/application/commitCandidate";
+import {
+  CommitConflictError,
+  isCommitConflictError,
+} from "../shared/application/commitConflict";
+import {
+  commitChangeSetRevision,
+  CommitGateBlockedError,
+  type CommitChangeSetRevisionApprovalRequirement,
+  type CommitChangeSetRevisionTransaction,
+} from "../safety/application/commitChangeSetRevision";
 
 export interface ApiDependencies {
   readonly novels: Repository<Novel>;
   readonly scenes: RevisionedRepository<Scene>;
   readonly generationTasks: Repository<GenerationTask>;
   readonly candidates: RevisionedRepository<Candidate>;
-  readonly validationRuns: Repository<ValidationRun>;
-  readonly reviewDecisions: Repository<ReviewDecision>;
   readonly canonicalFacts: RevisionedRepository<CanonicalFact>;
   readonly stateRecords: RevisionedRepository<StateRecord>;
   readonly narrativeCommits: Repository<NarrativeCommit>;
   readonly eventStore: EventStore;
   readonly runtime: RuntimeAdapter;
+  readonly commitTransaction: CommitChangeSetRevisionTransaction;
 }
 
 const versionReferenceSchema = z.object({
@@ -81,7 +98,7 @@ const modelPolicySchema = z.object({
   maxOutputTokens: z.number().int().positive(),
 });
 
-const freeFormRecordSchema = z.custom<Record<string, unknown>>(
+const freeFormRecordSchema = z.custom<Readonly<Record<string, unknown>>>(
   value => typeof value === "object" && value !== null && !Array.isArray(value),
   { message: "Expected an object" },
 );
@@ -131,10 +148,69 @@ const generationOperationSchema = z.enum([
   "consistency_analysis",
 ]);
 
+const approvalScopeSchema = z.object({
+  requirementDomain: z.enum(["canon", "plan", "structure", "manuscript", "story_state"]),
+  targetType: z.enum(["canonical_fact", "plan", "structure", "manuscript", "story_state"]),
+  objectId: z.string().min(1),
+  subAddress: z.string().min(1).optional(),
+});
+
+const approvalScopeRequirementSchema = z.object({
+  approvalScope: approvalScopeSchema,
+  requirement: z.string().min(1),
+  requirementLevel: z.enum(["not_required", "policy", "human"]),
+});
+
+const targetInvariantViolationSchema = z.union([
+  z.string().min(1),
+  z.object({
+    message: z.string().min(1),
+    evidenceReferences: z.array(z.string().min(1)).optional(),
+  }),
+]);
+
+const commitRequestSchema = z.object({
+  commitId: z.string().min(1),
+  changeSetRevisionId: z.string().min(1),
+  candidateId: z.string().min(1),
+  candidateSource: z.object({
+    version: z.string().min(1),
+    hash: z.string().min(1),
+  }),
+  planVersionId: z.string().min(1),
+  validationId: z.string().min(1),
+  mustPreserve: z.array(z.string().min(1)),
+  currentRevisionFacts: z.object({
+    unresolvedConflict: z.boolean(),
+    unresolvedConflictEvidenceReferences: z.array(z.string().min(1)).optional(),
+    stale: z.boolean(),
+    staleEvidenceReferences: z.array(z.string().min(1)).optional(),
+  }),
+  targetInvariantViolations: z.array(targetInvariantViolationSchema),
+  requiredApproval: z.boolean(),
+  approvalScopeRequirements: z.array(approvalScopeRequirementSchema).min(1),
+  reviewDecision: z.object({
+    id: z.string().min(1),
+    decidedBy: z.enum(["human", "policy"]),
+    actorId: z.string().min(1),
+    reason: z.string(),
+    evidenceReferences: z.array(z.string().min(1)),
+    policyVersion: z.string().min(1).optional(),
+    decisionRule: z.string().min(1).optional(),
+  }),
+});
+
 export function registerNovelBrainRoutes(app: FastifyInstance, dependencies: ApiDependencies): void {
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof z.ZodError) {
       return reply.code(400).send({ error: "Bad Request", details: error.issues });
+    }
+    if (isCommitConflictError(error)) {
+      return reply.code(409).send({
+        error: "Commit Conflict",
+        conflictType: error.conflictType,
+        reason: error.message,
+      });
     }
     return reply.send(error);
   });
@@ -230,93 +306,103 @@ export function registerNovelBrainRoutes(app: FastifyInstance, dependencies: Api
       change: runtimeResult.change,
       createdAt: new Date(),
     });
-    const updatedTask = startedTask;
-    await dependencies.generationTasks.save(updatedTask);
+    await dependencies.generationTasks.save(startedTask);
     await dependencies.candidates.save(candidate);
     return reply.code(201).send(candidate);
   });
 
-  app.post("/candidates/:candidateId/commit", async (request, reply) => {
-    const params = z.object({ candidateId: z.string().min(1) }).parse(request.params);
-    const body = z
-      .object({
-        commitId: z.string().min(1),
-        validationId: z.string().min(1),
-        reviewId: z.string().min(1),
-        actorId: z.string().min(1),
-        mustPreserve: z.array(z.string().min(1)),
-      })
-      .parse(request.body);
-    const candidate = await dependencies.candidates.findById(params.candidateId);
-    if (!candidate) return reply.code(404).send({ error: "Not Found" });
-    const scene = hasSceneChange(candidate.change)
-      ? await dependencies.scenes.findById(taskSceneId(candidate))
-      : undefined;
-    if (hasSceneChange(candidate.change) && !scene) {
+  app.post("/change-sets/:changeSetId/commit", async (request, reply) => {
+    const params = z.object({ changeSetId: z.string().min(1) }).parse(request.params);
+    const body = commitRequestSchema.parse(request.body);
+    const candidate = await dependencies.candidates.findById(body.candidateId);
+    if (!candidate) {
+      return reply.code(404).send({ error: "Not Found" });
+    }
+
+    const now = new Date();
+    const atomicChanges = candidateAtomicChanges(candidate.change);
+    const sceneChange = atomicChanges.find(change =>
+      change.type === "text" || change.type === "local_text",
+    );
+    const scene =
+      sceneChange && (sceneChange.type === "text" || sceneChange.type === "local_text")
+        ? await dependencies.scenes.findById(sceneChange.sceneId)
+        : undefined;
+    if (sceneChange && !scene) {
       return reply.code(409).send({ error: "Target scene not found" });
     }
 
-    const preValidation = validateCandidate({
+    const changes = atomicChanges.map((change, index) =>
+      candidateChangeToDomainChange({
+        change,
+        id: `change:${body.changeSetRevisionId}:${index + 1}`,
+        sourceType: "candidate",
+        sourceReference: {
+          identity: body.candidateId,
+          version: body.candidateSource.version,
+          hash: body.candidateSource.hash,
+        },
+        basedOnVersionSet: candidate.basedOnVersionSet,
+      }),
+    );
+    const revision = withChanges(
+      createInitialChangeSetRevision({
+        revisionId: body.changeSetRevisionId,
+        changeSetId: params.changeSetId,
+        novelId: candidate.novelId,
+        createdAt: now,
+      }),
+      changes,
+    );
+
+    const validation = validateCandidate({
       validationId: body.validationId,
+      changeSetRevisionId: revision.revisionId,
+      planVersionId: body.planVersionId,
       candidate,
       scene,
       mustPreserve: body.mustPreserve,
-      createdAt: new Date(),
+      createdAt: now,
     });
-    if (preValidation.outcome === "fail") return reply.code(422).send(preValidation.run);
+    if (validation.outcome === "fail") return reply.code(422).send(validation.run);
 
-    const selectedCandidate = selectCandidate(
-      markCandidateValidated(candidate, new Date()),
-      new Date(),
+    const requirements = body.approvalScopeRequirements.map(
+      (requirement): CommitChangeSetRevisionApprovalRequirement => requirement,
     );
-    await dependencies.candidates.save(selectedCandidate);
-    const validationRun = createValidationRun({
-      id: preValidation.run.id,
-      candidateId: selectedCandidate.id,
-      candidateRevisionId: selectedCandidate.currentRevisionId,
-      validatorId: preValidation.run.validatorId,
-      outcome: preValidation.run.outcome,
-      findings: preValidation.run.findings,
-      createdAt: preValidation.run.createdAt,
+    const reviewDecisions = reviewsForRequirements({
+      revision,
+      requirements,
+      template: body.reviewDecision,
+      validationId: body.validationId,
+      createdAt: now,
     });
-
-    const reviewDecision = createReviewDecision({
-      id: body.reviewId,
-      candidateId: selectedCandidate.id,
-      candidateRevisionId: selectedCandidate.currentRevisionId,
-      decision: "approve",
-      decidedBy: "human",
-      actorId: body.actorId,
-      reason: "",
-      createdAt: new Date(),
-    });
-    await dependencies.validationRuns.save(validationRun);
-    await dependencies.reviewDecisions.save(reviewDecision);
 
     try {
-      const commit = await commitCandidate({
-        repositories: {
-          scenes: dependencies.scenes,
-          candidates: dependencies.candidates,
-          canonicalFacts: dependencies.canonicalFacts,
-          stateRecords: dependencies.stateRecords,
-          narrativeCommits: dependencies.narrativeCommits,
-        },
-        eventStore: dependencies.eventStore,
+      const commit = await commitChangeSetRevision({
+        transaction: dependencies.commitTransaction,
         input: {
           commitId: body.commitId,
-          candidateId: selectedCandidate.id,
-          validationRuns: [validationRun],
-          reviewDecision,
-          now: new Date(),
+          changeSetRevision: revision,
+          validationRuns: [validation.run],
+          reviewDecisions,
+          currentRevisionFacts: body.currentRevisionFacts,
+          targetInvariantViolations: body.targetInvariantViolations,
+          requiredApproval: body.requiredApproval,
+          approvalScopeRequirements: requirements,
+          now,
         },
       });
       return reply.code(201).send(commit);
     } catch (error) {
+      if (error instanceof CommitGateBlockedError) {
+        return reply.code(409).send({
+          error: "Commit Conflict",
+          blockers: error.gate.blockers,
+          requiredActions: error.gate.requiredActions,
+        });
+      }
       if (error instanceof Error && error.message.startsWith("Stale dependency:")) {
-        return reply
-          .code(409)
-          .send({ error: "Commit Conflict", reason: error.message });
+        return reply.code(409).send({ error: "Commit Conflict", reason: error.message });
       }
       throw error;
     }
@@ -328,15 +414,111 @@ export function registerNovelBrainRoutes(app: FastifyInstance, dependencies: Api
   });
 }
 
-function taskSceneId(candidate: Candidate): string {
-  const taskVersion = Object.values(candidate.basedOnVersionSet).find(
-    reference => reference.aggregateType === "Scene",
-  );
-  if (!taskVersion) throw new Error("Candidate has no scene target");
-  return taskVersion.objectId;
+function candidateAtomicChanges(
+  change: Candidate["change"],
+): readonly CandidateAtomicChange[] {
+  return change.type === "composite" ? change.changes : [change];
 }
 
-function hasSceneChange(change: Candidate["change"]): boolean {
-  const changes = change.type === "composite" ? change.changes : [change];
-  return changes.some(atomicChange => atomicChange.type === "text" || atomicChange.type === "local_text");
+function candidateChangeToDomainChange(input: {
+  change: CandidateAtomicChange;
+  id: string;
+  sourceType: ChangeSourceType;
+  sourceReference: {
+    identity: string;
+    version: string;
+    hash: string;
+  };
+  basedOnVersionSet: VersionSet;
+}): Change {
+  const { change } = input;
+  if (change.type === "text") {
+    return createChange({
+      id: input.id,
+      sourceType: input.sourceType,
+      sourceReference: input.sourceReference,
+      targetAddress: { targetType: "manuscript", objectId: change.sceneId },
+      payload: { text: change.text },
+      basedOnVersionSet: input.basedOnVersionSet,
+    });
+  }
+  if (change.type === "local_text") {
+    return createChange({
+      id: input.id,
+      sourceType: input.sourceType,
+      sourceReference: input.sourceReference,
+      targetAddress: {
+        targetType: "manuscript",
+        objectId: change.sceneId,
+        subAddress: change.targetSpan.anchorId,
+      },
+      payload: { targetSpan: change.targetSpan, replacement: change.replacement },
+      basedOnVersionSet: input.basedOnVersionSet,
+    });
+  }
+  if (change.type === "canonical_fact") {
+    return createChange({
+      id: input.id,
+      sourceType: input.sourceType,
+      sourceReference: input.sourceReference,
+      targetAddress: { targetType: "canonical_fact", objectId: change.canonicalFactId },
+      payload: change.content,
+      basedOnVersionSet: input.basedOnVersionSet,
+    });
+  }
+  return createChange({
+    id: input.id,
+    sourceType: input.sourceType,
+    sourceReference: input.sourceReference,
+    targetAddress: { targetType: "story_state", objectId: change.stateRecordId },
+    payload: change.content,
+    basedOnVersionSet: input.basedOnVersionSet,
+  });
+}
+
+function withChanges(revision: ChangeSetRevision, changes: readonly Change[]): ChangeSetRevision {
+  try {
+    assertNoDuplicateTargets(changes);
+  } catch (error) {
+    throw new CommitConflictError(
+      "duplicate_target",
+      error instanceof Error ? error.message : "Duplicate target address",
+    );
+  }
+  return Object.freeze({
+    ...revision,
+    changes: Object.freeze([...changes]),
+  });
+}
+
+function reviewsForRequirements(input: {
+  revision: ChangeSetRevision;
+  requirements: readonly CommitChangeSetRevisionApprovalRequirement[];
+  template: z.infer<typeof commitRequestSchema>["reviewDecision"];
+  validationId: string;
+  createdAt: Date;
+}): readonly ReviewDecision[] {
+  const unique = new Map<string, ApprovalScope>();
+  for (const requirement of input.requirements) {
+    const key = approvalScopeKey(requirement.approvalScope);
+    if (!unique.has(key)) unique.set(key, requirement.approvalScope);
+  }
+  const scopes = [...unique.values()];
+  return scopes.map((approvalScope, index) =>
+    createReviewDecision({
+      id: scopes.length === 1 ? input.template.id : `${input.template.id}:${index + 1}`,
+      changeSetRevisionId: input.revision.revisionId,
+      approvalScope,
+      decision: "approve",
+      decidedBy: input.template.decidedBy,
+      actorId: input.template.actorId,
+      reason: input.template.reason,
+      evidenceReferences: [input.validationId, ...input.template.evidenceReferences],
+      ...(input.template.policyVersion
+        ? { policyVersion: input.template.policyVersion }
+        : {}),
+      ...(input.template.decisionRule ? { decisionRule: input.template.decisionRule } : {}),
+      createdAt: input.createdAt,
+    }),
+  );
 }
