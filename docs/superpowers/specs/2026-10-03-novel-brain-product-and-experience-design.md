@@ -1579,6 +1579,10 @@ Open Questions / Narrative Health / Recall
   Layer semantics:      confirmed (projection, non-blocking, explainable)
   Projection schema
   and query semantics:  pending
+
+Entity / Aggregate Boundary Review
+  Status: CLOSED
+  4 decided reconciliation items, recorded in Section 5.9
 ```
 
 Status rule:
@@ -1589,29 +1593,16 @@ These areas must be closed through Entity Brainstorming and an Entity / Aggregat
 
 ### 4.1 Reconciliation with the Core Engine Implementation
 
-This baseline refines one already-implemented decision and must be reconciled explicitly rather than silently.
+Entity / Aggregate Boundary Review is CLOSED. Four reconciliation items were decided; full decision records, the migration chain, and the migration dependency order live in Section 5.9.
 
 ```text
-Existing Core Engine:
-  GenerationTask owns candidateIds: readonly DomainId[]
-
-This baseline:
-  Growing id arrays should not be GenerationTask domain state;
-  prefer independent association / query index (taskId -> attempts,
-  taskId -> materializations, taskId -> candidates).
+1. GenerationTask candidateIds  -> remove from Aggregate State; derive by query
+2. ValidationRun binding        -> Change Set Revision + Frozen Validation Plan Version
+3. ReviewDecision binding       -> Change Set Revision + Approval Scope
+4. NarrativeCommit binding      -> Change Set Revision
 ```
 
-```text
-Item:        GenerationTask candidate association
-Status:      pending reconciliation
-Constraint:  GenerationTask remains a bounded process aggregate and does
-             not become a history container
-Required:    Entity Brainstorming must decide whether candidateIds stays as
-             a bounded convenience reference, moves to a query index, or is
-             replaced by an explicit association record
-```
-
-This reconciliation must not weaken the confirmed rule that GenerationTask does not own candidate content, validation history, review history, or commit history.
+These are decided migration tasks, not reopened entity design. They must not weaken the confirmed rules that GenerationTask does not own candidate content, validation history, review history, or commit history, and that Validation, Approval, and Commit share the Change Set Revision as their semantic subject.
 
 ### 4.2 Known Clarifications for V2
 
@@ -2470,26 +2461,89 @@ Blocked > Pending > Satisfied
 
 All unsatisfied scopes are reported at once and each becomes a Commit Blocker with a Required Action. Approval Gate Result is a derived projection re-evaluated on each commit attempt and never permanently cached.
 
-### 5.9 Entity Brainstorming Reconciliation Items
+### 5.9 Core Engine Reconciliation Items
+
+Entity / Aggregate Boundary Review is CLOSED. The following four items are decided migration tasks, not reopened entity design.
 
 ```text
 1. GenerationTask candidate association
-   Existing Core Engine: GenerationTask owns candidateIds[]
-   This baseline:        growing id arrays should not be domain state
-   Status:               pending reconciliation
+   Decision:  C — remove from Aggregate State, derive by query
+   Existing:  GenerationTask owns candidateIds[]
+   Target:    Candidate.taskId is the association fact;
+              query Candidate.taskId -> Candidate[]
+   Note:      addCandidateReference is legacy; completeGenerationTask keeps the
+              "at least one candidate" process invariant as transient validation only
+   Status:    OPEN / PENDING migration
 
 2. ValidationRun binding
-   Existing Core Engine: Candidate Revision
-   This baseline:        Change Set Revision
-   Status:               pending reconciliation
+   Decision:  bind to Change Set Revision + Frozen Validation Plan Version
+   Existing:  candidateId + candidateRevisionId
+   Target:    changeSetRevisionId + planVersionId
+   Note:      Candidate becomes optional Context / Evidence Reference
+   Status:    OPEN / PENDING migration
 
 3. ReviewDecision binding
-   Existing Core Engine: Candidate Revision
-   This baseline:        Change Set Revision
-   Status:               pending reconciliation
+   Decision:  bind to Change Set Revision + Approval Scope
+   Existing:  candidateId + candidateRevisionId
+   Target:    changeSetRevisionId + approvalScope
+   Note:      Candidate remains Decision Evidence / Source Context only
+   Status:    OPEN / PENDING migration
+
+4. NarrativeCommit binding
+   Decision:  bind to Change Set Revision
+   Existing:  candidateId + candidateRevisionId + validationRunIds + reviewDecisionId
+   Target:    changeSetRevisionId + validation and approval references
+   Note:      Candidate is no longer the commit subject
+   Status:    OPEN / PENDING migration
 ```
 
-These must be resolved during the Entity / Aggregate Boundary Review before writing-plans. Until they are resolved, the new Validation Target and Approval Target semantics are not fully implemented.
+Migration chain:
+
+```text
+Legacy Path
+Candidate -> ValidationRun -> ReviewDecision -> NarrativeCommit
+
+Target Path
+Candidate
+-> Adoption / Change
+-> Change Set
+-> Change Set Revision
+   ├── ValidationRun
+   ├── ReviewDecision
+   └── NarrativeCommit
+```
+
+```text
+Candidate           = Source / Context
+Change Set Revision = unified semantic subject for Validation / Approval / Commit
+```
+
+Migration dependency order:
+
+```text
+Change Set Aggregate
+      |
+      v
+Change Set Revision
+      |
+      v
+ValidationRun
+ReviewDecision
+NarrativeCommit
+```
+
+Change Set / Change Set Revision is the shared prerequisite for the three binding migrations. ValidationRun, ReviewDecision, and NarrativeCommit must not continue to maintain Candidate-bound semantics as their formal target.
+
+Boundary Review conclusion:
+
+```text
+Entity Design Status:      CLOSED
+Locked Baseline Conflicts: resolved by decision (4 items)
+Writing-Plans Blockers:    NONE
+Reconciliation Items:      OPEN / PENDING migration
+```
+
+Reconciliation items are decided migration tasks. They do not reopen entity design.
 
 
 
@@ -2534,6 +2588,7 @@ Design Spec (this document)
       |
       v
 Entity Brainstorming
+  [DONE]    Entity Brainstorming overall
   [DONE]    Narrative Proposal
   [DONE]    Adoption Decision
   [DONE]    Change Set / Change / Revision
@@ -2547,13 +2602,23 @@ Entity Brainstorming
       |
       v
 Entity / Aggregate Boundary Review
-  including reconciliation items in 4.1 and 5.9
-      |
-      v
-Final Design Spec Revision
+  [CLOSED]  4 decided reconciliation items (Section 5.9)
       |
       v
 writing-plans
 ```
 
-This document is the stable context baseline for that sequence. The confirmed decisions in Sections 1, 2, and 3 are not open for re-litigation; the pending areas in Section 4 are open for design.
+Status:
+
+```text
+Entity Design Status:      CLOSED
+Locked Baseline Conflicts: resolved by decision (4 items)
+Writing-Plans Blockers:    NONE
+Reconciliation Items:      OPEN / PENDING migration
+```
+
+The three PENDING areas above are not writing-plans blockers for the Co-Creation and Real AI Runtime scope. They stay pending until a plan needs them.
+
+Next: `writing-plans`, using this Locked Product and Entity Design Baseline plus the four Reconciliation Items as input.
+
+This document is the stable context baseline. The confirmed decisions in Sections 1, 2, 3, and 5 are not open for re-litigation.
