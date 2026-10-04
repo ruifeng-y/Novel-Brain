@@ -7,8 +7,10 @@ import {
   commitChangeSetRevision,
   type CommitChangeSetRevisionInput,
   type CommitChangeSetRevisionTransaction,
+  type CommitChangeSetRevisionTransactionWork,
 } from "../../safety/application/commitChangeSetRevision";
 import type { RunAuditProjection } from "./runAuditProjection";
+import type { Identified, UniqueCreatePort } from "../../shared/application/repository";
 
 export interface RunCompensationHistory {
   readonly narrativeCommits: readonly NarrativeCommit[];
@@ -169,6 +171,58 @@ async function saveRecordIfAbsent(
   }
 }
 
+interface CompensationAtomicTransaction extends CommitChangeSetRevisionTransaction {
+  runWithCompensationRecords?<TRecord extends Identified, T>(
+    operation: (
+      work: CommitChangeSetRevisionTransactionWork,
+      records: UniqueCreatePort<TRecord>,
+    ) => Promise<T>,
+  ): Promise<T>;
+}
+
+function transactionRecordPort(
+  records: UniqueCreatePort<Identified>,
+): RunCompensationRecordPort {
+  return {
+    findById: async (id) => (await records.findById(id)) as RunCompensationRecord | undefined,
+    saveIfAbsent: (record) => records.saveIfAbsent(record),
+  };
+}
+
+async function mirrorRecord(
+  records: RunCompensationRecordPort,
+  record: RunCompensationRecord,
+): Promise<void> {
+  try {
+    await records.saveIfAbsent(record);
+  } catch {
+    const existing = await records.findById(record.id);
+    if (!existing || canonicalJson(existing) !== canonicalJson(record)) {
+      throw new Error(`Run compensation record conflict: ${record.id}`);
+    }
+  }
+}
+
+function bufferedRecordPort(records: RunCompensationRecordPort): RunCompensationRecordPort & {
+  commit(): Promise<void>;
+} {
+  let pending: RunCompensationRecord | undefined;
+  return {
+    findById: async (id) =>
+      pending?.id === id ? pending : records.findById(id),
+    saveIfAbsent: async (record) => {
+      if (pending?.id === record.id || (await records.findById(record.id))) {
+        throw new Error(`Record already exists: ${record.id}`);
+      }
+      if (pending) throw new Error(`Run compensation record conflict: ${pending.id}`);
+      pending = record;
+    },
+    commit: async () => {
+      if (pending) await mirrorRecord(records, pending);
+    },
+  };
+}
+
 export async function compensateRunCommit(input: {
   readonly audit: RunAuditProjection;
   readonly history: RunCompensationHistory;
@@ -192,8 +246,12 @@ export async function compensateRunCommit(input: {
     input.request.sourceCommitId,
   );
 
-  return input.transaction.run(async work => {
-    const existingRecord = await input.records.findById(id);
+  const atomicTransaction = input.transaction as CompensationAtomicTransaction;
+  const execute = async (
+    work: CommitChangeSetRevisionTransactionWork,
+    records: RunCompensationRecordPort,
+  ): Promise<RunCompensationResult> => {
+    const existingRecord = await records.findById(id);
     if (existingRecord) {
       return deepFreeze({
         status: "replayed" as const,
@@ -205,7 +263,7 @@ export async function compensateRunCommit(input: {
 
     const existingCommit = await work.repositories.narrativeCommits.findById(compensationCommitId);
     if (existingCommit?.status === "committed") {
-      const record = await saveRecordIfAbsent(input.records, {
+      const record = await saveRecordIfAbsent(records, {
         id,
         runId: input.audit.runId,
         sourceCommitId: input.request.sourceCommitId,
@@ -240,7 +298,7 @@ export async function compensateRunCommit(input: {
       status = "replayed";
     }
 
-    const record = await saveRecordIfAbsent(input.records, {
+    const record = await saveRecordIfAbsent(records, {
       id,
       runId: input.audit.runId,
       sourceCommitId: input.request.sourceCommitId,
@@ -254,5 +312,18 @@ export async function compensateRunCommit(input: {
       compensationCommitId: compensationCommit.id,
       record,
     });
-  });
+  };
+
+  if (atomicTransaction.runWithCompensationRecords) {
+    const result = await atomicTransaction.runWithCompensationRecords(
+      (work, records) => execute(work, transactionRecordPort(records)),
+    );
+    await mirrorRecord(input.records, result.record);
+    return result;
+  }
+
+  const bufferedRecords = bufferedRecordPort(input.records);
+  const result = await input.transaction.run((work) => execute(work, bufferedRecords));
+  await bufferedRecords.commit();
+  return result;
 }

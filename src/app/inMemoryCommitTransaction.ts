@@ -13,6 +13,7 @@ import type {
   Repository,
   Revisioned,
   RevisionedRepository,
+  UniqueCreatePort,
 } from "../shared/application/repository";
 import {
   CommitConflictError,
@@ -259,6 +260,46 @@ class InMemoryCommitNarrativeStore implements Repository<NarrativeCommit> {
   }
 }
 
+interface UniqueStoreSnapshot {
+  readonly entities: ReadonlyMap<string, Identified>;
+}
+
+class InMemoryCommitUniqueStore implements UniqueCreatePort<Identified> {
+  private entities = new Map<string, Identified>();
+
+  async findById(id: string): Promise<Identified | undefined> {
+    const entity = this.entities.get(id);
+    return entity ? snapshot(entity) : undefined;
+  }
+
+  async listByNovel(novelId: string): Promise<readonly Identified[]> {
+    return Object.freeze(
+      [...this.entities.values()]
+        .filter((entity) => (entity.novelId ?? entity.id) === novelId)
+        .map((entity) => snapshot(entity)),
+    );
+  }
+
+  async saveIfAbsent(entity: Identified): Promise<void> {
+    if (this.entities.has(entity.id)) {
+      throw new CommitConflictError(
+        "unique_record",
+        `Record already exists: ${entity.id}`,
+      );
+    }
+    this.entities.set(entity.id, snapshot(entity));
+  }
+
+  captureSnapshot(): UniqueStoreSnapshot {
+    return {
+      entities: new Map([...this.entities].map(([id, entity]) => [id, snapshot(entity)])),
+    };
+  }
+
+  restoreSnapshot(value: UniqueStoreSnapshot): void {
+    this.entities = new Map([...value.entities].map(([id, entity]) => [id, snapshot(entity)]));
+  }
+}
 interface EventStoreSnapshot {
   readonly events: readonly DomainEvent[];
   readonly eventIds: readonly string[];
@@ -393,6 +434,7 @@ export class InMemoryCommitTransaction implements CommitChangeSetRevisionTransac
   private readonly stateRecordStore = new InMemoryCommitRevisionedStore<StateRecord>();
   private readonly narrativeCommitStore = new InMemoryCommitNarrativeStore();
   private readonly eventStoreDelegate = new InMemoryCommitEventStore();
+  private readonly compensationRecordStore = new InMemoryCommitUniqueStore();
 
   readonly scenes: RevisionedRepository<Scene>;
   readonly canonicalFacts: RevisionedRepository<CanonicalFact>;
@@ -421,6 +463,17 @@ export class InMemoryCommitTransaction implements CommitChangeSetRevisionTransac
     return new SerializedRevisionedRepository(delegate, this.coordinator);
   }
 
+  runWithCompensationRecords<TRecord extends Identified, T>(
+    operation: (
+      work: CommitChangeSetRevisionTransactionWork,
+      records: UniqueCreatePort<TRecord>,
+    ) => Promise<T>,
+  ): Promise<T> {
+    return this.run((work) =>
+      operation(work, this.compensationRecordStore as unknown as UniqueCreatePort<TRecord>),
+    );
+  }
+
   async run<T>(
     operation: (work: CommitChangeSetRevisionTransactionWork) => Promise<T>,
   ): Promise<T> {
@@ -439,6 +492,7 @@ export class InMemoryCommitTransaction implements CommitChangeSetRevisionTransac
       stateRecords: this.stateRecordStore.captureSnapshot(),
       narrativeCommits: this.narrativeCommitStore.captureSnapshot(),
       eventStore: this.eventStoreDelegate.captureSnapshot(),
+      compensationRecords: this.compensationRecordStore.captureSnapshot(),
     };
     try {
       return await operation(this.work());
@@ -448,6 +502,7 @@ export class InMemoryCommitTransaction implements CommitChangeSetRevisionTransac
       this.stateRecordStore.restoreSnapshot(snapshotState.stateRecords);
       this.narrativeCommitStore.restoreSnapshot(snapshotState.narrativeCommits);
       this.eventStoreDelegate.restoreSnapshot(snapshotState.eventStore);
+      this.compensationRecordStore.restoreSnapshot(snapshotState.compensationRecords);
       throw error;
     }
   }

@@ -36,6 +36,7 @@ export interface AttentionDispositionEvent {
   readonly action: AttentionAction;
   readonly actorId: string;
   readonly occurredAt: string;
+  readonly evidenceFingerprint: string;
   readonly actionId?: string;
   readonly snoozedUntil?: string;
 }
@@ -111,8 +112,15 @@ function validateItem(item: RecallItemForAttention): void {
   }
 }
 
+// Revision identity reserves the ordered command/evidence chain. Immutable
+// history storage rejects any different payload under the same chain identity.
 function revisionId(record: Omit<AttentionDispositionRecord, "currentRevisionId">): string {
-  return hashContent(canonicalJson(record));
+  return hashContent(
+    canonicalJson({
+      id: record.id,
+      eventIds: record.history.map((event) => event.eventId),
+    }),
+  );
 }
 
 function freezeRecord(
@@ -154,7 +162,7 @@ function actionEventId(input: AttentionActionInput): string {
         canonicalJson({
           itemId: input.item.itemId,
           candidateId: input.item.candidateId,
-          action: input.action,
+          evidenceFingerprint: input.item.evidenceFingerprint,
           actionId: input.actionId,
         }),
       );
@@ -213,6 +221,19 @@ export function applyAttentionAction(input: AttentionActionInput): AttentionActi
   if (input.reason !== undefined) requiredText(input.reason, "reason");
 
   const commandEventId = actionEventId(input);
+  const reservedEvent = input.actionId === undefined
+    ? undefined
+    : input.current?.history.find((event) => event.actionId === input.actionId);
+  if (reservedEvent !== undefined) {
+    if (reservedEvent.evidenceFingerprint !== input.item.evidenceFingerprint) {
+      throw new Error(
+        `Attention action evidence fingerprint conflict: ${input.actionId}`,
+      );
+    }
+    if (reservedEvent.action !== input.action || reservedEvent.snoozedUntil !== snoozedUntil) {
+      throw new Error(`Attention action identity conflict: ${input.actionId}`);
+    }
+  }
   const existingEvent = input.current?.history.find(
     (event) => event.eventId === commandEventId,
   );
@@ -230,6 +251,7 @@ export function applyAttentionAction(input: AttentionActionInput): AttentionActi
         action: "recheck",
         actorId,
         occurredAt,
+        evidenceFingerprint: input.item.evidenceFingerprint,
       },
       "active",
     );
@@ -240,6 +262,7 @@ export function applyAttentionAction(input: AttentionActionInput): AttentionActi
     action: input.action,
     actorId,
     occurredAt,
+    evidenceFingerprint: input.item.evidenceFingerprint,
     ...(input.actionId === undefined ? {} : { actionId: input.actionId }),
     ...(snoozedUntil === undefined ? {} : { snoozedUntil }),
   });
@@ -278,6 +301,7 @@ export function recheckAttentionItem(input: {
       action: "recheck",
       actorId: "recall",
       occurredAt,
+      evidenceFingerprint: input.item.evidenceFingerprint,
     },
     "active",
   );

@@ -6,6 +6,7 @@ export type CommitConflictType =
   | "narrative_commit_binding"
   | "duplicate_event_id"
   | "duplicate_target"
+  | "unique_record"
   | "revision_history"
   | "raw_write_in_transaction";
 

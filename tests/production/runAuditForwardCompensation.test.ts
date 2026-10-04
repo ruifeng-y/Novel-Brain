@@ -12,6 +12,7 @@ import {
   runCompensationCommitId,
   runCompensationIdempotencyKey,
   type RunCompensationRecord,
+  type RunCompensationRecordPort,
   type RunCompensationRequest,
 } from "../../src/production/application/runCompensationService";
 import { InMemoryRepository } from "../../src/app/inMemoryRepositories";
@@ -69,6 +70,8 @@ import {
   CommitGateBlockedError,
   commitChangeSetRevision,
   type CommitChangeSetRevisionInput,
+  type CommitChangeSetRevisionTransaction,
+  type CommitChangeSetRevisionTransactionWork,
 } from "../../src/safety/application/commitChangeSetRevision";
 import { commitSceneText, createScene } from "../../src/manuscript/domain/scene";
 import {
@@ -894,5 +897,185 @@ describe("[task:4.5-4.6] P1 acceptance: real-history idempotent replay", () => {
     expect(second.compensationCommitId).toBe(first.compensationCommitId);
     expect(await setup.transaction.eventStore.listByNovel("novel-audit")).toEqual(eventsAfterFirst);
     expect(await setup.transaction.narrativeCommits.listByNovel("novel-audit")).toEqual(commitsAfterFirst);
+  });
+});
+
+function injectCompensationInterruption(
+  transaction: CommitChangeSetRevisionTransaction,
+): CommitChangeSetRevisionTransaction {
+  return {
+    run<T>(
+      operation: (work: CommitChangeSetRevisionTransactionWork) => Promise<T>,
+    ): Promise<T> {
+      return transaction.run(async (work) =>
+        operation({
+          ...work,
+          eventStore: {
+            listByNovel: (novelId) => work.eventStore.listByNovel(novelId),
+            appendEventsIfAbsent: async (events) => {
+              await work.eventStore.appendEventsIfAbsent(events);
+              throw new Error("7173 compensation interrupted");
+            },
+          },
+        }),
+      );
+    },
+  };
+}
+
+interface CompensationAtomicTransaction extends CommitChangeSetRevisionTransaction {
+  runWithCompensationRecords<T>(
+    operation: (
+      work: CommitChangeSetRevisionTransactionWork,
+      records: RunCompensationRecordPort,
+    ) => Promise<T>,
+  ): Promise<T>;
+}
+
+function injectCommitOrderFailure(
+  transaction: CommitChangeSetRevisionTransaction,
+): CompensationAtomicTransaction {
+  const atomic = transaction as CompensationAtomicTransaction;
+  let depth = 0;
+  return {
+    run<T>(
+      operation: (work: CommitChangeSetRevisionTransactionWork) => Promise<T>,
+    ): Promise<T> {
+      depth += 1;
+      return atomic
+        .run(async (work) => {
+          const result = await operation(work);
+          if (depth === 1) throw new Error("7173 compensation commit-order crash");
+          return result;
+        })
+        .finally(() => {
+          depth -= 1;
+        });
+    },
+    runWithCompensationRecords<T>(
+      operation: (
+        work: CommitChangeSetRevisionTransactionWork,
+        records: RunCompensationRecordPort,
+      ) => Promise<T>,
+    ): Promise<T> {
+      depth += 1;
+      return atomic
+        .runWithCompensationRecords(async (work, records) => {
+          const result = await operation(work, records);
+          if (depth === 1) throw new Error("7173 compensation commit-order crash");
+          return result;
+        })
+        .finally(() => {
+          depth -= 1;
+        });
+    },
+  };
+}
+describe("[task:7.1-7.3] compensation recovery hardening", () => {
+  it("[recovery] retries deterministic compensation after interruption without reserving the success identity", async () => {
+    const setup = await compensationFixture();
+    const records = new InMemoryRepository<RunCompensationRecord>();
+    const input = {
+      audit: projectRunAudit(setup.audit),
+      history: setup.history,
+      request: setup.request,
+      transaction: setup.transaction,
+      records,
+      now: later,
+    };
+    const compensationCommitId = runCompensationCommitId("run-audit", "core-source-commit");
+
+    await expect(
+      compensateRunCommit({
+        ...input,
+        transaction: injectCompensationInterruption(setup.transaction),
+      }),
+    ).rejects.toThrow("7173 compensation interrupted");
+
+    const failedIds = (await setup.transaction.narrativeCommits.listByNovel("novel-audit"))
+      .filter((commit) => commit.status === "failed")
+      .map((commit) => commit.id);
+    expect(failedIds).not.toContain(compensationCommitId);
+    expect(await records.findById(
+      runCompensationIdempotencyKey("run-audit", "core-source-commit"),
+    )).toBeUndefined();
+
+    const retry = await compensateRunCommit(input);
+    expect(retry.status).toBe("compensated");
+    expect(retry.compensationCommitId).toBe(compensationCommitId);
+    expect(
+      (await setup.transaction.narrativeCommits.findById(compensationCommitId))?.status,
+    ).toBe("committed");
+  });
+
+  it("[transaction] keeps the idempotency record out of a failed commit-order boundary", async () => {
+    const setup = await compensationFixture();
+    const records = new InMemoryRepository<RunCompensationRecord>();
+    const input = {
+      audit: projectRunAudit(setup.audit),
+      history: setup.history,
+      request: setup.request,
+      transaction: setup.transaction,
+      records,
+      now: later,
+    };
+    const key = runCompensationIdempotencyKey("run-audit", "core-source-commit");
+    const compensationCommitId = runCompensationCommitId("run-audit", "core-source-commit");
+
+    await expect(
+      compensateRunCommit({
+        ...input,
+        transaction: injectCommitOrderFailure(setup.transaction),
+      }),
+    ).rejects.toThrow("7173 compensation commit-order crash");
+
+    expect(await records.findById(key)).toBeUndefined();
+    expect(await setup.transaction.narrativeCommits.findById(compensationCommitId)).toBeUndefined();
+
+    const recovered = await compensateRunCommit(input);
+    expect(recovered.status).toBe("compensated");
+    expect(await records.findById(key)).toEqual(recovered.record);
+    expect(
+      (await setup.transaction.narrativeCommits.listByNovel("novel-audit")).filter(
+        (commit) => commit.status === "committed" && commit.id !== "core-source-commit",
+      ),
+    ).toHaveLength(1);
+  });
+  it("[replay] converges interrupted and repeated compensation to one forward commit", async () => {
+    const setup = await compensationFixture();
+    const records = new InMemoryRepository<RunCompensationRecord>();
+    const input = {
+      audit: projectRunAudit(setup.audit),
+      history: setup.history,
+      request: setup.request,
+      transaction: setup.transaction,
+      records,
+      now: later,
+    };
+
+    await expect(
+      compensateRunCommit({
+        ...input,
+        transaction: injectCompensationInterruption(setup.transaction),
+      }),
+    ).rejects.toThrow("7173 compensation interrupted");
+    const first = await compensateRunCommit(input);
+    const replay = await compensateRunCommit({
+      ...input,
+      records: new InMemoryRepository<RunCompensationRecord>(),
+    });
+
+    expect(replay.status).toBe("replayed");
+    expect(replay.compensationCommitId).toBe(first.compensationCommitId);
+    expect(
+      (await setup.transaction.narrativeCommits.listByNovel("novel-audit")).filter(
+        (commit) => commit.id !== "core-source-commit" && commit.status === "committed",
+      ),
+    ).toHaveLength(1);
+    expect(
+      (await setup.transaction.eventStore.listByNovel("novel-audit")).filter(
+        (event) => event.name === "NarrativeCommitRecorded",
+      ),
+    ).toHaveLength(2);
   });
 });
