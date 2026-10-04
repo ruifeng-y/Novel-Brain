@@ -411,7 +411,7 @@ function assertCanTerminate(
   return assertNotMovingBackward(occurredAt, attempt.updatedAt, name);
 }
 
-function assertRuntimeRequestResultMatch(
+export function assertRuntimeRequestResultMatch(
   request: RuntimeRequest,
   result: RuntimeResult,
 ): void {
