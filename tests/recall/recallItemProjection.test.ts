@@ -211,3 +211,30 @@ describe("[task:5.3-5.5] [replay] deterministic Recall Item projection", () => {
     );
   });
 });
+describe("[task:7.4-7.5] [cross-system] queryable Recall evidence", () => {
+  it("queries evidence-backed Recall items by stable evidence reference", () => {
+    const items = projectRecallItems(input());
+    const selected = queryRecallItems(items, {
+      evidenceReferences: ["ValidationRun:validation-1"],
+    });
+
+    expect(selected.map((item) => item.candidateId)).toEqual([
+      "baseline:validation-attention:ValidationRun:validation-1",
+    ]);
+    expect(selected[0]?.evidence).toEqual([
+      {
+        sourceKind: "validation",
+        evidenceReference: "ValidationRun:validation-1",
+        sourceReference: {
+          identity: "ValidationRun:validation-1",
+          version: "validation-v1",
+          hash: "validation-hash-1",
+        },
+        staleness: "fresh",
+      },
+    ]);
+    expect(selected[0]?.explanation.evidenceReferences).toEqual([
+      "ValidationRun:validation-1",
+    ]);
+  });
+});

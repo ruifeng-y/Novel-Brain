@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   buildRunAuditEvents,
+  queryRunAuditEvidence,
   projectRunAudit,
   replayRunAuditEvents,
   type RunAuditInput,
@@ -16,6 +17,11 @@ import {
   type RunCompensationRequest,
 } from "../../src/production/application/runCompensationService";
 import { InMemoryRepository } from "../../src/app/inMemoryRepositories";
+import { describeVerificationGate } from "../support/capabilityVerificationContract";
+import {
+  projectRecallItems,
+  queryRecallItems,
+} from "../../src/recall/projection/recallItemProjection";
 import { InMemoryCommitTransaction } from "../../src/app/inMemoryCommitTransaction";
 import {
   createProductionRun,
@@ -1077,5 +1083,240 @@ describe("[task:7.1-7.3] compensation recovery hardening", () => {
         (event) => event.name === "NarrativeCommitRecorded",
       ),
     ).toHaveLength(2);
+  });
+});
+
+describe("[task:7.4-7.5] [domain] queryable Run audit evidence", () => {
+  it("queries Run, Attempt, Candidate, decision, commit, cost, and failure evidence by identity", () => {
+    const fixture = auditFixture();
+    const projection = projectRunAudit(fixture.input);
+    const result = queryRunAuditEvidence(projection, {
+      evidenceKinds: [
+        "run",
+        "attempt",
+        "candidate",
+        "decision",
+        "commit",
+        "cost",
+        "failure",
+      ],
+      evidenceIds: [
+        fixture.run.id,
+        fixture.attemptA.id,
+        fixture.candidateA.id,
+        fixture.thresholdDecision.id,
+        fixture.sourceCommit.id,
+        fixture.cost.id,
+        `attempt:${fixture.attemptB.id}`,
+        `commit:${fixture.failedCommit.id}`,
+      ],
+    });
+
+    expect(result.run.map((entry) => entry.id)).toEqual(["run-audit"]);
+    expect(result.attempts.map((entry) => entry.attemptId)).toEqual([fixture.attemptA.id]);
+    expect(result.candidates.map((entry) => entry.id)).toEqual([fixture.candidateA.id]);
+    expect(result.decisions).toEqual([{ kind: "budget_threshold", decision: fixture.thresholdDecision }]);
+    expect(result.commits.map((entry) => entry.commitId)).toEqual([fixture.sourceCommit.id]);
+    expect(result.costs.map((entry) => entry.id)).toEqual([fixture.cost.id]);
+    expect(result.failures).toEqual([
+      expect.objectContaining({
+        sourceKind: "attempt",
+        sourceId: fixture.attemptB.id,
+        code: "runtime_failed",
+        message: "Generation failed",
+        retryable: true,
+      }),
+      expect.objectContaining({
+        sourceKind: "commit",
+        sourceId: fixture.failedCommit.id,
+        code: "narrative_commit_failed",
+        message: "Post-commit audit failure",
+      }),
+    ]);
+    expect(projection.hash).toBe(projectRunAudit(fixture.input).hash);
+  });
+});
+function acceptanceRecallItems(runId: string) {
+  return projectRecallItems({
+    candidates: [
+      {
+        candidateId: "recall-run-failure",
+        detectionKind: "run_failure",
+        classification: "run",
+        priority: "normal",
+        reason: "run signal records a failure",
+        evidence: [
+          {
+            sourceKind: "run_signals",
+            evidenceReference: `Run:${runId}`,
+            sourceReference: {
+              identity: runId,
+              version: `${runId}:v1`,
+              hash: `hash:${runId}`,
+            },
+            staleness: "fresh",
+          },
+        ],
+      },
+    ],
+  });
+}
+
+function acceptanceAuditFixture() {
+  const fixture = auditFixture();
+  const projection = projectRunAudit(fixture.input);
+  const recallItems = acceptanceRecallItems(fixture.run.id);
+  return { fixture, projection, recallItems };
+}
+
+describe("[task:7.4-7.5] Full System Acceptance Gates", () => {
+  describeVerificationGate("domain", "keeps Run and Recall evidence queryable without changing truth", () => {
+    const { fixture, projection, recallItems } = acceptanceAuditFixture();
+    const result = queryRunAuditEvidence(projection);
+
+    expect(result.run.map((entry) => entry.id)).toEqual([fixture.run.id]);
+    expect(result.attempts).toHaveLength(2);
+    expect(result.candidates).toHaveLength(1);
+    expect(result.decisions).toHaveLength(3);
+    expect(result.commits).toHaveLength(2);
+    expect(result.costs).toHaveLength(1);
+    expect(result.failures).toHaveLength(2);
+    expect(queryRecallItems(recallItems, {})).toHaveLength(1);
+    expect(Object.isFrozen(result)).toBe(true);
+    expect(projection.hash).toBe(projectRunAudit(fixture.input).hash);
+  });
+
+  describeVerificationGate("integration", "links Run, commit provenance, and Recall evidence references", () => {
+    const { fixture, projection, recallItems } = acceptanceAuditFixture();
+    const selected = queryRunAuditEvidence(projection, {
+      evidenceKinds: ["run", "attempt", "candidate", "decision", "commit", "cost", "failure"],
+      evidenceIds: [
+        fixture.run.id,
+        fixture.attemptA.id,
+        fixture.candidateA.id,
+        fixture.thresholdDecision.id,
+        fixture.sourceCommit.id,
+        fixture.cost.id,
+        `attempt:${fixture.attemptB.id}`,
+        `commit:${fixture.failedCommit.id}`,
+      ],
+    });
+
+    expect(selected.commits[0]).toMatchObject({
+      commitId: fixture.sourceCommit.id,
+      candidateIds: [fixture.candidateA.id],
+      attemptIds: [fixture.attemptA.id],
+      taskIds: [fixture.taskA.id],
+      sourceTypes: ["candidate"],
+    });
+    expect(queryRecallItems(recallItems, {
+      evidenceReferences: [`Run:${fixture.run.id}`],
+    })[0]?.evidence[0]?.sourceReference.identity).toBe(fixture.run.id);
+  });
+
+  describeVerificationGate("persistence", "queries evidence produced through persisted commit history", async () => {
+    const setup = await compensationFixture();
+    const projection = projectRunAudit(setup.audit);
+    const persisted = await setup.transaction.narrativeCommits.listByNovel("novel-audit");
+    const selected = queryRunAuditEvidence(projection, {
+      evidenceKinds: ["commit"],
+      evidenceIds: [setup.coreSourceCommit.id],
+    });
+
+    expect(persisted.map((commit) => commit.id)).toContain(setup.coreSourceCommit.id);
+    expect(selected.commits.map((commit) => commit.commitId)).toEqual([setup.coreSourceCommit.id]);
+    expect(selected.commits[0]?.changeSetRevisionId).toBe(setup.sourceRevision.revisionId);
+  });
+
+  describeVerificationGate("transaction", "keeps query evidence unchanged when transactional work rolls back", async () => {
+    const setup = await compensationFixture();
+    const projection = projectRunAudit(setup.audit);
+    const before = queryRunAuditEvidence(projection);
+    const persistedBefore = await setup.transaction.narrativeCommits.listByNovel("novel-audit");
+
+    await expect(
+      setup.transaction.run(async () => {
+        throw new Error("task 7.4-7.5 acceptance rollback");
+      }),
+    ).rejects.toThrow("task 7.4-7.5 acceptance rollback");
+
+    expect(await setup.transaction.narrativeCommits.listByNovel("novel-audit")).toEqual(persistedBefore);
+    expect(queryRunAuditEvidence(projection)).toEqual(before);
+  });
+
+  describeVerificationGate("concurrency", "returns stable audit queries under concurrent reads", async () => {
+    const { projection } = acceptanceAuditFixture();
+    const results = await Promise.all(
+      Array.from({ length: 8 }, () => Promise.resolve().then(() => queryRunAuditEvidence(projection))),
+    );
+
+    for (const result of results) expect(result).toEqual(results[0]);
+  });
+
+  describeVerificationGate("recovery", "recovers deterministic query evidence from retained audit events", () => {
+    const { fixture, projection } = acceptanceAuditFixture();
+    const recovered = replayRunAuditEvents(projection.events.map((event) => ({ ...event })));
+
+    expect(recovered.hash).toBe(projection.hash);
+    const selected = queryRunAuditEvidence(projectRunAudit(fixture.input), {
+      evidenceKinds: ["failure"],
+      evidenceIds: [`attempt:${fixture.attemptB.id}`, `commit:${fixture.failedCommit.id}`],
+    });
+    expect(selected.failures).toHaveLength(2);
+  });
+
+  describeVerificationGate("replay", "replays reordered and duplicate events before querying the same evidence", () => {
+    const { fixture, projection } = acceptanceAuditFixture();
+    const replayed = replayRunAuditEvents([
+      ...projection.events.slice().reverse(),
+      ...projection.events,
+    ]);
+
+    expect(replayed.events).toEqual(projection.events);
+    expect(replayed.hash).toBe(projection.hash);
+    expect(queryRunAuditEvidence(projection, { evidenceKinds: ["cost"] }).costs)
+      .toEqual(queryRunAuditEvidence(projectRunAudit(fixture.input), { evidenceKinds: ["cost"] }).costs);
+  });
+
+  describeVerificationGate("cross-system", "keeps Recall observational while querying shared Run evidence", () => {
+    const { fixture, projection, recallItems } = acceptanceAuditFixture();
+    const runEvidence = queryRunAuditEvidence(projection, {
+      evidenceKinds: ["run", "failure"],
+      evidenceIds: [fixture.run.id, `attempt:${fixture.attemptB.id}`],
+    });
+    const recallEvidence = queryRecallItems(recallItems, {
+      evidenceReferences: [`Run:${fixture.run.id}`],
+    });
+
+    expect(runEvidence.run[0]?.id).toBe(fixture.run.id);
+    expect(runEvidence.failures[0]?.sourceId).toBe(fixture.attemptB.id);
+    expect(recallEvidence[0]?.proposedAction).toBeUndefined();
+    expect(JSON.stringify(recallEvidence)).not.toContain("Narrative Truth");
+  });
+
+  describeVerificationGate("regression", "adds query views without adding a second audit truth", () => {
+    const { fixture, projection } = acceptanceAuditFixture();
+    const before = structuredClone({
+      schemaVersion: projection.schemaVersion,
+      runId: projection.runId,
+      hash: projection.hash,
+    });
+    const result = queryRunAuditEvidence(projection, {
+      evidenceKinds: ["run", "attempt", "candidate", "decision", "commit", "cost", "failure"],
+    });
+
+    expect(Object.keys(result).sort()).toEqual([
+      "attempts",
+      "candidates",
+      "commits",
+      "costs",
+      "decisions",
+      "failures",
+      "run",
+    ]);
+    expect(projection.schemaVersion).toBe("run-audit:v1");
+    expect(projection.runId).toBe(fixture.run.id);
+    expect({ schemaVersion: projection.schemaVersion, runId: projection.runId, hash: projection.hash })
+      .toEqual(before);
   });
 });

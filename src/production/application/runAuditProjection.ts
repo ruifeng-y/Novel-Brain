@@ -514,3 +514,76 @@ export function projectRunAudit(input: RunAuditInput): RunAuditProjection {
     hash: auditHash(events),
   });
 }
+export type RunAuditEvidenceKind =
+  | "run"
+  | "attempt"
+  | "candidate"
+  | "decision"
+  | "commit"
+  | "cost"
+  | "failure";
+
+const runAuditEvidenceKinds: readonly RunAuditEvidenceKind[] = [
+  "run",
+  "attempt",
+  "candidate",
+  "decision",
+  "commit",
+  "cost",
+  "failure",
+];
+
+export interface RunAuditEvidenceQuery {
+  readonly evidenceKinds?: readonly RunAuditEvidenceKind[];
+  readonly evidenceIds?: readonly string[];
+}
+
+export interface RunAuditEvidenceQueryResult {
+  readonly run: readonly ProductionRun[];
+  readonly attempts: readonly RunAttemptAuditRecord[];
+  readonly candidates: readonly Candidate[];
+  readonly decisions: readonly RunDecisionAuditRecord[];
+  readonly commits: readonly RunCommitAuditRecord[];
+  readonly costs: readonly RunCostRecord[];
+  readonly failures: readonly RunFailureAuditRecord[];
+}
+
+function decisionEvidenceId(record: RunDecisionAuditRecord): string {
+  return record.kind === "checkpoint" ? record.checkpoint.id : record.decision.id;
+}
+
+function failureEvidenceId(record: RunFailureAuditRecord): string {
+  return `${record.sourceKind}:${record.sourceId}`;
+}
+
+export function queryRunAuditEvidence(
+  projection: RunAuditProjection,
+  query: RunAuditEvidenceQuery = {},
+): RunAuditEvidenceQueryResult {
+  const kinds = new Set(
+    query.evidenceKinds?.length ? query.evidenceKinds : runAuditEvidenceKinds,
+  );
+  const ids = query.evidenceIds?.length ? new Set(query.evidenceIds) : undefined;
+  const selected = (kind: RunAuditEvidenceKind, id: string): boolean =>
+    kinds.has(kind) && (ids === undefined || ids.has(id));
+
+  return deepFreeze({
+    run: projection.run && selected("run", projection.run.id) ? [projection.run] : [],
+    attempts: projection.attempts.filter(attempt =>
+      selected("attempt", attempt.attemptId),
+    ),
+    candidates: projection.candidates.filter(candidate =>
+      selected("candidate", candidate.id),
+    ),
+    decisions: projection.decisions.filter(decision =>
+      selected("decision", decisionEvidenceId(decision)),
+    ),
+    commits: projection.commits.filter(commit =>
+      selected("commit", commit.commitId),
+    ),
+    costs: projection.costs.filter(cost => selected("cost", cost.id)),
+    failures: projection.failures.filter(failure =>
+      selected("failure", failureEvidenceId(failure)),
+    ),
+  });
+}
