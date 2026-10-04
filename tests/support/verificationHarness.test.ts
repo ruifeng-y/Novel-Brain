@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   assertTaskGateCoverage,
@@ -42,6 +43,11 @@ describe("verification command conventions", () => {
         passWithNoTests: false,
       },
     ]);
+  });
+
+  it("includes Dependency contracts in the domain-focused verification surface", () => {
+    const config = readFileSync("vitest.domain.config.ts", "utf8");
+    expect(config).toContain("tests/dependency/**/*.test.ts");
   });
 
   it("keeps Integration Verification on the existing integration Vitest config", () => {
@@ -201,6 +207,25 @@ describe("verification task manifest", () => {
         "regression",
       ],
     });
+  });
+
+  it("registers Task 2.3 with all dependency and impact gate evidence", () => {
+    expect(verificationTaskProfiles["2.3"]).toEqual({
+      id: "2.3",
+      label: "[task:2.3]",
+      requiredGates: [
+        "domain",
+        "integration",
+        "persistence",
+        "transaction",
+        "concurrency",
+        "recovery",
+        "replay",
+        "cross-system",
+        "regression",
+      ],
+    });
+    expect(() => parseVerificationCli(["system", "--task", "2.3"])).not.toThrow();
   });
 
   it("rejects unregistered task profiles", () => {
