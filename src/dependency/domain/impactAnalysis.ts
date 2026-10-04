@@ -831,4 +831,18 @@ export function assertImpactAnalysisResultIntegrity(result: ImpactAnalysisResult
   if (contentHash !== expectedContentHash) {
     throw new Error("Impact result contentHash does not match result content");
   }
+  const recomputed = computeImpactAnalysis({
+    id: result.id,
+    novelId: result.novelId,
+    subject: result.subject,
+    relations: result.readSet.relations,
+    classificationFacts: result.readSet.classificationFacts,
+    currentVersionSet: result.readSet.basedOnVersionSet,
+    evidenceSnapshot: result.readSet.evidenceSnapshot,
+    maxDepth: result.maxDepth,
+    computedAt: result.computedAt,
+  });
+  if (canonicalJson(recomputed) !== canonicalJson(result)) {
+    throw new Error("Impact result does not match canonical read set recomputation");
+  }
 }

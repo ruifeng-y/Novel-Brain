@@ -48,6 +48,11 @@ export const verificationTaskProfiles = {
     label: "[task:2.3]",
     requiredGates: verificationGates,
   },
+  "2.3-H": {
+    id: "2.3-H",
+    label: "[task:2.3-H]",
+    requiredGates: verificationGates,
+  },
   "2.4": {
     id: "2.4",
     label: "[task:2.4]",
