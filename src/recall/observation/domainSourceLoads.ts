@@ -16,6 +16,8 @@ import type {
   RunFailureAuditRecord,
 } from "../../production/application/runAuditProjection";
 import type { ValidationRun } from "../../production/domain/validationRun";
+import type { ReviewDecision } from "../../production/domain/reviewDecision";
+import type { NarrativeCommit } from "../../safety/domain/narrativeCommit";
 import type { VersionSet } from "../../shared/domain/versioning";
 import type {
   RecallObservationLoad,
@@ -23,6 +25,21 @@ import type {
   RecallObservationStaleness,
 } from "./sourceAdapters";
 
+function withoutUndefined(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(withoutUndefined);
+  if (value !== null && typeof value === "object") {
+    return Object.fromEntries(
+      Object.entries(value as Record<string, unknown>)
+        .filter(([, entry]) => entry !== undefined)
+        .map(([key, entry]) => [key, withoutUndefined(entry)]),
+    );
+  }
+  return value;
+}
+
+function evidenceHash(value: unknown): string {
+  return hashContent(canonicalJson(withoutUndefined(value)));
+}
 function requireText(value: string, field: string): string {
   if (!value.trim()) throw new Error(`${field} is required`);
   return value;
@@ -237,5 +254,53 @@ export function createRunSignalsObservationLoad(input: {
     sourceIdentity: requireText(input.sourceIdentity, "sourceIdentity"),
     sourceVersion: sourceVersionValue,
     records,
+  };
+}
+
+export function createReviewDecisionObservationLoad(input: {
+  readonly sourceIdentity: string;
+  readonly decisions: readonly ReviewDecision[];
+}): RecallObservationLoad<ReviewDecision> {
+  const decisions = [...input.decisions].sort((left, right) => left.id.localeCompare(right.id));
+  return {
+    sourceIdentity: requireText(input.sourceIdentity, "sourceIdentity"),
+    sourceVersion: sourceVersion(
+      "review",
+      decisions.map((decision) => decision.changeSetRevisionId),
+    ),
+    records: decisions.map((decision, index) =>
+      domainRecord({
+        evidenceReference: `ReviewDecision:${decision.id}`,
+        sourceVersion: decision.changeSetRevisionId,
+        sourceHash: evidenceHash(decision),
+        ordinal: index + 1,
+        staleness: "fresh",
+        value: withoutUndefined(decision) as ReviewDecision,
+      }),
+    ),
+  };
+}
+
+export function createNarrativeCommitObservationLoad(input: {
+  readonly sourceIdentity: string;
+  readonly commits: readonly NarrativeCommit[];
+}): RecallObservationLoad<NarrativeCommit> {
+  const commits = [...input.commits].sort((left, right) => left.id.localeCompare(right.id));
+  return {
+    sourceIdentity: requireText(input.sourceIdentity, "sourceIdentity"),
+    sourceVersion: sourceVersion(
+      "commit",
+      commits.map((commit) => commit.changeSetRevisionId),
+    ),
+    records: commits.map((commit, index) =>
+      domainRecord({
+        evidenceReference: `NarrativeCommit:${commit.id}`,
+        sourceVersion: commit.changeSetRevisionId,
+        sourceHash: evidenceHash(commit),
+        ordinal: index + 1,
+        staleness: "fresh",
+        value: withoutUndefined(commit) as NarrativeCommit,
+      }),
+    ),
   };
 }

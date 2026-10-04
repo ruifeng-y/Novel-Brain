@@ -100,6 +100,8 @@ const sourceKindOrder: readonly RecallObservationSourceKind[] = [
   "dependency",
   "impact",
   "validation",
+  "review_decision",
+  "narrative_commit",
   "run_signals",
   "narrative",
   "memory",

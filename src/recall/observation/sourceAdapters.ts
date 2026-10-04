@@ -12,6 +12,8 @@ export type RecallObservationSourceKind =
   | "dependency"
   | "impact"
   | "validation"
+  | "review_decision"
+  | "narrative_commit"
   | "memory"
   | "run_signals";
 
