@@ -185,6 +185,24 @@ describe("verification task manifest", () => {
       ],
     });
   });
+  it("registers Task 2.2 with all narrative proposal and adoption gate evidence", () => {
+    expect(verificationTaskProfiles["2.2"]).toEqual({
+      id: "2.2",
+      label: "[task:2.2]",
+      requiredGates: [
+        "domain",
+        "integration",
+        "persistence",
+        "transaction",
+        "concurrency",
+        "recovery",
+        "replay",
+        "cross-system",
+        "regression",
+      ],
+    });
+  });
+
   it("rejects unregistered task profiles", () => {
     expect(() => parseVerificationCli(["system", "--task", "9.9"])).toThrow(
       "unknown verification task profile: 9.9",
