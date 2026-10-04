@@ -245,13 +245,16 @@ class InMemoryCommitNarrativeStore implements Repository<NarrativeCommit> {
         `NarrativeCommit id already exists: ${entity.id}`,
       );
     }
-    for (const existing of this.entities.values()) {
-      if (existing.changeSetRevisionId === entity.changeSetRevisionId) {
-        throw new CommitConflictError(
-          "narrative_commit_revision",
-          `NarrativeCommit changeSetRevisionId already exists: ${entity.changeSetRevisionId}`,
-        );
-      }
+    const sameRevision = [...this.entities.values()].filter(
+      existing => existing.changeSetRevisionId === entity.changeSetRevisionId,
+    );
+    if (
+      sameRevision.some(existing => existing.status === "pending" || existing.status === "committed")
+    ) {
+      throw new CommitConflictError(
+        "narrative_commit_revision",
+        `NarrativeCommit changeSetRevisionId already exists: ${entity.changeSetRevisionId}`,
+      );
     }
   }
 }

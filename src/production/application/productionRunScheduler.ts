@@ -73,7 +73,7 @@ export function scheduleProductionRunAttempt(
   );
   if (
     (relation === "initial" && state.status !== "pending") ||
-    (relation !== "initial" && state.status !== "pending" && state.status !== "running") ||
+    (relation !== "initial" && state.status !== "pending" && state.status !== "running" && state.status !== "failed") ||
     !state.dependsOn.every((dependencyId) => completed.has(dependencyId))
   ) {
     throw new Error("step is not runnable");
