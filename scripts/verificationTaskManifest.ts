@@ -68,6 +68,11 @@ export const verificationTaskProfiles = {
     label: "[task:3.3-3.4]",
     requiredGates: verificationGates,
   },
+  "4.1-4.2": {
+    id: "4.1-4.2",
+    label: "[task:4.1-4.2]",
+    requiredGates: verificationGates,
+  },
 } as const satisfies Record<string, VerificationTaskProfile>;
 
 export function getVerificationTaskProfile(taskId: string): VerificationTaskProfile {
