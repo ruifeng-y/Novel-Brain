@@ -209,6 +209,24 @@ describe("verification task manifest", () => {
     });
   });
 
+  it("registers Task 2.4 with all shared prerequisite integration gate evidence", () => {
+    expect(verificationTaskProfiles["2.4"]).toEqual({
+      id: "2.4",
+      label: "[task:2.4]",
+      requiredGates: [
+        "domain",
+        "integration",
+        "persistence",
+        "transaction",
+        "concurrency",
+        "recovery",
+        "replay",
+        "cross-system",
+        "regression",
+      ],
+    });
+    expect(() => parseVerificationCli(["system", "--task", "2.4"])).not.toThrow();
+  });
   it("registers Task 2.3 with all dependency and impact gate evidence", () => {
     expect(verificationTaskProfiles["2.3"]).toEqual({
       id: "2.3",
