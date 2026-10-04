@@ -13,6 +13,7 @@ import {
   type PersistencePayloadCodec,
 } from "../domain/persistencePayload";
 import { deepFreeze } from "../domain/immutable";
+import { createImmutableTimestamp, isImmutableTimestamp } from "../domain/observationSource";
 import { runInPrismaSavepoint } from "./prismaSavepoint";
 
 type Payload = Record<string, unknown>;
@@ -29,6 +30,7 @@ function serialize<T>(entity: T, codec: PersistencePayloadCodec): Payload {
 
 function cloneValue<T>(value: T): T {
   if (value instanceof Date) return new Date(value.getTime()) as T;
+  if (isImmutableTimestamp(value)) return createImmutableTimestamp(value) as T;
   if (Array.isArray(value)) return value.map(cloneValue) as T;
   if (value !== null && typeof value === "object") {
     const clone = Object.create(Object.getPrototypeOf(value)) as Record<string, unknown>;

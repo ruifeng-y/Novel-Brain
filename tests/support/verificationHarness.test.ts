@@ -168,6 +168,23 @@ describe("verification task manifest", () => {
     });
   });
 
+  it("registers Task 2.1 with all execution-attempt gate evidence", () => {
+    expect(verificationTaskProfiles["2.1"]).toEqual({
+      id: "2.1",
+      label: "[task:2.1]",
+      requiredGates: [
+        "domain",
+        "integration",
+        "persistence",
+        "transaction",
+        "concurrency",
+        "recovery",
+        "replay",
+        "cross-system",
+        "regression",
+      ],
+    });
+  });
   it("rejects unregistered task profiles", () => {
     expect(() => parseVerificationCli(["system", "--task", "9.9"])).toThrow(
       "unknown verification task profile: 9.9",

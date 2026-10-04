@@ -1,3 +1,5 @@
+import { isImmutableTimestamp } from "./observationSource";
+
 const DATE_TAG = "$date";
 
 function fail(path: string, reason: string): never {
@@ -37,6 +39,11 @@ function assertValue(value: unknown, path: string): void {
     if (Number.isNaN(value.getTime())) fail(path, "invalid Date");
     return;
   }
+  try {
+    if (isImmutableTimestamp(value)) return;
+  } catch {
+    fail(path, "malformed ImmutableTimestamp");
+  }
   if (Array.isArray(value)) {
     for (let index = 0; index < value.length; index += 1) {
       if (!Object.prototype.hasOwnProperty.call(value, index)) {
@@ -66,6 +73,7 @@ export function assertSupportedPersistencePayload(value: unknown): void {
 
 function encodeValue(value: unknown): unknown {
   if (value instanceof Date) return { [DATE_TAG]: value.toISOString() };
+  if (isImmutableTimestamp(value)) return { [DATE_TAG]: value.iso };
   if (Array.isArray(value)) return value.map(encodeValue);
   if (value !== null && typeof value === "object") {
     return Object.fromEntries(

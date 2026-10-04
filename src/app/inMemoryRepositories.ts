@@ -7,10 +7,12 @@ import type {
 } from "../shared/application/repository";
 import { legacyPersistencePayloadCodec, type PersistencePayloadCodec } from "../shared/domain/persistencePayload";
 import { deepFreeze } from "../shared/domain/immutable";
+import { createImmutableTimestamp, isImmutableTimestamp } from "../shared/domain/observationSource";
 import type { SnapshotStore } from "../shared/infrastructure/persistenceTransaction";
 
 function cloneValue<T>(value: T): T {
   if (value instanceof Date) return new Date(value.getTime()) as T;
+  if (isImmutableTimestamp(value)) return createImmutableTimestamp(value) as T;
   if (Array.isArray(value)) return value.map(cloneValue) as T;
   if (value !== null && typeof value === "object") {
     const clone = Object.create(Object.getPrototypeOf(value)) as Record<string, unknown>;
