@@ -21,7 +21,7 @@ import {
   createValidationCompletedEvent,
   createReviewDecisionRecordedEvent,
 } from "../../src/production/domain/aiProductionEvents";
-import { InMemoryEventStore, type EventStore } from "../../src/safety/infrastructure/eventStore";
+import { InMemoryEventStore } from "../../src/safety/infrastructure/eventStore";
 import { canonicalJson, hashContent } from "../../src/shared/domain/contentHash";
 import {
   createObservation,
@@ -32,43 +32,13 @@ import {
   type SourceReference,
 } from "../../src/shared/domain/observationSource";
 import {
-  domainEventSourceContent,
-  domainEventSourceReference,
+  createEventStoreObservationEnvironment,
   runObservationSourceContract,
   type ExpectedObservationReference,
   type ObservationSourceContractEnvironment,
 } from "../support/observationSourceContract";
 
 const now = new Date("2026-10-04T00:00:00.000Z");
-
-class EventStoreObservationSource implements ObservationSource<unknown> {
-  constructor(
-    private readonly eventStore: EventStore,
-    private readonly novelId: string,
-    private readonly sourceIdentity: string,
-  ) {}
-
-  async snapshot(): Promise<ObservationSnapshot<unknown>> {
-    const events = await this.eventStore.listByNovel(this.novelId);
-    const sourceContent = events.map(domainEventSourceContent);
-    const sourceReference: SourceReference = {
-      identity: this.sourceIdentity,
-      version: `events:${events.length}:${events.at(-1)?.revisionId ?? "empty"}`,
-      hash: hashContent(canonicalJson(sourceContent)),
-    };
-    return createObservationSnapshot({
-      sourceReference,
-      observations: events.map((event, index) =>
-        createObservation({
-          evidenceReference: event.eventId,
-          sourceReference: domainEventSourceReference(event),
-          ordinal: index + 1,
-          data: event,
-        }),
-      ),
-    });
-  }
-}
 
 class ExistingEvidenceObservationSource implements ObservationSource<unknown> {
   constructor(
@@ -115,33 +85,11 @@ describe("Task 1.2 observation source contracts", () => {
       }),
     ]);
 
-    const savedEvents = await eventStore.listByNovel("novel-evidence");
-    const sourceReference: SourceReference = {
-      identity: "event-store:novel-evidence",
-      version: `events:${savedEvents.length}:${savedEvents.at(-1)?.revisionId ?? "empty"}`,
-      hash: hashContent(canonicalJson(savedEvents.map(domainEventSourceContent))),
-    };
-    return {
-      source: new EventStoreObservationSource(eventStore, "novel-evidence", sourceReference.identity),
-      expectedSourceReference: sourceReference,
-      expectedObservations: savedEvents.map((event, index) => ({
-        evidenceReference: event.eventId,
-        sourceReference: domainEventSourceReference(event),
-        ordinal: index + 1,
-      })),
-      captureSourceState: async () =>
-        (await eventStore.listByNovel("novel-evidence")).map((event) => ({
-          eventId: event.eventId,
-          objectId: event.objectId,
-          revisionId: event.revisionId,
-          payload: event.payload,
-        })),
-      attemptObservedDataMutation: (snapshot) => {
-        const payload = (snapshot.observations[0]?.data as { payload: { readonly textLength: number } })
-          .payload;
-        (payload as { textLength: number }).textLength = -1;
-      },
-    } satisfies ObservationSourceContractEnvironment<unknown>;
+    return createEventStoreObservationEnvironment({
+      eventStore,
+      novelId: "novel-evidence",
+      sourceIdentity: "event-store:novel-evidence",
+    });
   });
 
   runObservationSourceContract<unknown>("existing evidence and version sources", async () => {

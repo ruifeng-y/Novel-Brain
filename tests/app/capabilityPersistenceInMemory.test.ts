@@ -8,52 +8,23 @@ function deferred() {
   return { promise, resolve };
 }
 import {
-  InMemoryRepository,
-  InMemoryRevisionedRepository,
-} from "../../src/app/inMemoryRepositories";
-import { InMemoryPersistenceTransaction } from "../../src/shared/infrastructure/persistenceTransaction";
-import { capabilityPersistencePayloadCodec } from "../../src/shared/domain/persistencePayload";
-import {
   capabilityRecord,
   runCapabilityPersistenceTransactionContract,
   runCapabilityRepositoryContract,
   type CapabilityPersistenceEnvironment,
-  type CapabilityPersistenceWork,
-  type CapabilityRecord,
   type CapabilityRepositoryEnvironment,
-  type CapabilityRevisionRecord,
 } from "../support/capabilityPersistenceContract";
+import {
+  createInMemoryCapabilityPersistenceFixture,
+} from "../support/capabilityPersistenceFixtures";
 
 async function createInMemoryPersistenceEnvironment(): Promise<CapabilityPersistenceEnvironment> {
-  const records = new InMemoryRepository<CapabilityRecord>(capabilityPersistencePayloadCodec);
-  const revisions = new InMemoryRevisionedRepository<CapabilityRevisionRecord>(capabilityPersistencePayloadCodec);
-  const otherRecords = new InMemoryRepository<CapabilityRecord>(capabilityPersistencePayloadCodec);
-  const otherRevisions = new InMemoryRevisionedRepository<CapabilityRevisionRecord>(capabilityPersistencePayloadCodec);
-  const transaction = new InMemoryPersistenceTransaction<CapabilityPersistenceWork>(
-    (access) => ({
-      records: access.unique(records),
-      revisions: access.revisioned(revisions),
-      otherRecords: access.unique(otherRecords),
-      otherRevisions: access.revisioned(otherRevisions),
-    }),
-    [records, revisions, otherRecords, otherRevisions],
-  );
-  return {
-    transaction,
-    external: {
-      records: transaction.unique(records),
-      revisions: transaction.revisioned(revisions),
-      otherRecords: transaction.unique(otherRecords),
-      otherRevisions: transaction.revisioned(otherRevisions),
-    },
-    saveRevision: (_work, entity) => transaction.saveRevision(otherRevisions, entity),
-  };
+  return createInMemoryCapabilityPersistenceFixture().persistence;
 }
 
-runCapabilityRepositoryContract("InMemory", async (): Promise<CapabilityRepositoryEnvironment> => ({
-  records: new InMemoryRepository<CapabilityRecord>(capabilityPersistencePayloadCodec),
-  revisions: new InMemoryRevisionedRepository<CapabilityRevisionRecord>(capabilityPersistencePayloadCodec),
-}));
+runCapabilityRepositoryContract("InMemory", async (): Promise<CapabilityRepositoryEnvironment> => {
+  return createInMemoryCapabilityPersistenceFixture().repository;
+});
 
 runCapabilityPersistenceTransactionContract("InMemory", createInMemoryPersistenceEnvironment);
 

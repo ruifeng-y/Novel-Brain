@@ -1,7 +1,10 @@
 import { describe, expect, it } from "vitest";
 import type { DomainEvent } from "../../src/safety/domain/domainEvent";
+import type { EventStore } from "../../src/safety/infrastructure/eventStore";
 import { canonicalJson, hashContent } from "../../src/shared/domain/contentHash";
 import {
+  createObservation,
+  createObservationSnapshot,
   resolveObservation,
   createImmutableTimestamp,
   type ImmutableTimestamp,
@@ -59,6 +62,90 @@ export function domainEventSourceReference(event: DomainEvent): SourceReference 
     identity: event.eventId,
     version: event.revisionId,
     hash: hashContent(canonicalJson(domainEventSourceContent(event))),
+  };
+}
+export function eventStreamSourceReference(
+  events: readonly DomainEvent[],
+  sourceIdentity: string,
+): SourceReference {
+  return {
+    identity: sourceIdentity,
+    version: `events:${events.length}:${events.at(-1)?.revisionId ?? "empty"}`,
+    hash: hashContent(canonicalJson(events.map(domainEventSourceContent))),
+  };
+}
+
+export function createEventStoreObservationSnapshot(
+  events: readonly DomainEvent[],
+  sourceIdentity: string,
+): ObservationSnapshot<unknown> {
+  return createObservationSnapshot({
+    sourceReference: eventStreamSourceReference(events, sourceIdentity),
+    observations: events.map((event, index) =>
+      createObservation({
+        evidenceReference: event.eventId,
+        sourceReference: domainEventSourceReference(event),
+        ordinal: index + 1,
+        data: event,
+      }),
+    ),
+  });
+}
+
+export interface EventStoreObservationEnvironmentInput {
+  readonly eventStore: EventStore;
+  readonly novelId: string;
+  readonly sourceIdentity: string;
+}
+
+export class EventStoreObservationSource implements ObservationSource<unknown> {
+  constructor(
+    private readonly eventStore: EventStore,
+    private readonly novelId: string,
+    private readonly sourceIdentity: string,
+  ) {}
+
+  async snapshot(): Promise<ObservationSnapshot<unknown>> {
+    const events = await this.eventStore.listByNovel(this.novelId);
+    return createEventStoreObservationSnapshot(events, this.sourceIdentity);
+  }
+}
+
+export async function createEventStoreObservationEnvironment(
+  input: EventStoreObservationEnvironmentInput,
+): Promise<ObservationSourceContractEnvironment<unknown>> {
+  const events = await input.eventStore.listByNovel(input.novelId);
+  const snapshot = createEventStoreObservationSnapshot(events, input.sourceIdentity);
+  return {
+    source: new EventStoreObservationSource(
+      input.eventStore,
+      input.novelId,
+      input.sourceIdentity,
+    ),
+    expectedSourceReference: snapshot.sourceReference,
+    expectedObservations: snapshot.observations.map((observation) => ({
+      evidenceReference: observation.evidenceReference,
+      sourceReference: observation.sourceReference,
+      ordinal: observation.ordinal,
+    })),
+    captureSourceState: async () =>
+      (await input.eventStore.listByNovel(input.novelId)).map((event) => ({
+        eventId: event.eventId,
+        name: event.name,
+        context: event.context,
+        novelId: event.novelId,
+        objectId: event.objectId,
+        revisionId: event.revisionId,
+        commitId: event.commitId,
+        payload: event.payload,
+        occurredAt: event.occurredAt,
+      })),
+    attemptObservedDataMutation: (mutationSnapshot) => {
+      const payload = (
+        mutationSnapshot.observations[0]?.data as { payload: { readonly textLength: number } }
+      ).payload;
+      (payload as { textLength: number }).textLength = -1;
+    },
   };
 }
 export interface MutableObservationSourceContractEnvironment<T> {

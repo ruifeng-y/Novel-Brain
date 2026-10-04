@@ -4,31 +4,28 @@ import {
   PrismaRepository,
   PrismaRevisionedRepository,
 } from "../../src/shared/infrastructure/prismaRepositories";
-import { PrismaPersistenceTransaction } from "../../src/shared/infrastructure/persistenceTransaction";
 import {
   assertSupportedPersistencePayload,
   decodePersistencePayload,
   encodePersistencePayload,
 } from "../../src/shared/domain/persistencePayload";
 import {
-  capabilityRecord,
   capabilityRevision,
   runCapabilityPersistenceTransactionContract,
   runCapabilityRepositoryContract,
   type CapabilityPersistenceEnvironment,
-  type CapabilityPersistenceWork,
-  type CapabilityRecord,
   type CapabilityRepositoryEnvironment,
   type CapabilityRevisionRecord,
 } from "../support/capabilityPersistenceContract";
+import {
+  clearPrismaCapabilityPersistenceFixture,
+  createPrismaCapabilityPersistenceFixture,
+} from "../support/capabilityPersistenceFixtures";
 
 process.env.DATABASE_URL ??=
   "postgresql://novelbrain:novelbrain@localhost:5434/novelbrain?schema=public";
 const prisma = new PrismaClient();
-const recordAggregateType = "CapabilityContractRecord";
-const revisionAggregateType = "CapabilityContractRevision";
-const otherRecordAggregateType = "CapabilityContractRecordOther";
-const otherRevisionAggregateType = "CapabilityContractRevisionOther";
+const fixtureName = "CapabilityContract";
 const legacyRecordAggregateType = "CapabilityLegacyCodecRecord";
 
 const capabilityCodec = {
@@ -37,111 +34,14 @@ const capabilityCodec = {
   decode: decodePersistencePayload,
 };
 
-function reviveRecord(payload: Record<string, unknown>): CapabilityRecord {
-  return payload as unknown as CapabilityRecord;
-}
-
 function reviveRevision(payload: Record<string, unknown>): CapabilityRevisionRecord {
   return payload as unknown as CapabilityRevisionRecord;
 }
 
-function recordPort(
-  client: ConstructorParameters<typeof PrismaRepository<CapabilityRecord>>[0],
-  aggregateType = recordAggregateType,
-): CapabilityPersistenceWork["records"] {
-  const repository = new PrismaRepository(
-    client,
-    aggregateType,
-    reviveRecord,
-    capabilityCodec,
-  );
-  return {
-    saveIfAbsent: (entity) => repository.saveIfAbsent(entity),
-    findById: (id) => repository.findById(id),
-    listByNovel: (novelId) => repository.listByNovel(novelId),
-  };
-}
-
-function revisionPort(
-  client: ConstructorParameters<typeof PrismaRevisionedRepository<CapabilityRevisionRecord>>[0],
-  aggregateType = revisionAggregateType,
-): CapabilityPersistenceWork["revisions"] {
-  const repository = new PrismaRevisionedRepository(
-    client,
-    aggregateType,
-    reviveRevision,
-    capabilityCodec,
-  );
-  return {
-    saveRevisionIfAbsent: (entity) => repository.saveRevisionIfAbsent(entity),
-    saveIfCurrent: (expectedRevisionId, entity) =>
-      repository.saveIfCurrent(expectedRevisionId, entity),
-    findById: (id) => repository.findById(id),
-    getRevision: (id, revisionId) => repository.getRevision(id, revisionId),
-    listByNovel: (novelId) => repository.listByNovel(novelId),
-  };
-}
-
-async function createPrismaPersistenceEnvironment(): Promise<CapabilityPersistenceEnvironment> {
-  const fullRevisionSaves = new WeakMap<
-    object,
-    (entity: CapabilityRevisionRecord) => Promise<void>
-  >();
-  const transaction = new PrismaPersistenceTransaction<CapabilityPersistenceWork>(
-    prisma,
-    (client) => {
-      const work: CapabilityPersistenceWork = {
-        records: recordPort(client),
-        revisions: revisionPort(client),
-        otherRecords: recordPort(client, otherRecordAggregateType),
-        otherRevisions: revisionPort(client, otherRevisionAggregateType),
-      };
-      fullRevisionSaves.set(work, (entity) =>
-        new PrismaRevisionedRepository(
-          client,
-          otherRevisionAggregateType,
-          reviveRevision,
-          capabilityCodec,
-        ).save(entity),
-      );
-      return work;
-    },
-  );
-  return {
-    transaction,
-    external: {
-      records: recordPort(prisma),
-      revisions: revisionPort(prisma),
-      otherRecords: recordPort(prisma, otherRecordAggregateType),
-      otherRevisions: revisionPort(prisma, otherRevisionAggregateType),
-    },
-    saveRevision: (work, entity) => {
-      const save = fullRevisionSaves.get(work);
-      if (!save) throw new Error("Unknown transaction work");
-      return save(entity);
-    },
-  };
-}
 beforeEach(async () => {
+  await clearPrismaCapabilityPersistenceFixture(prisma, fixtureName);
   await prisma.currentObject.deleteMany({
-    where: {
-      aggregateType: {
-        in: [
-          recordAggregateType,
-          revisionAggregateType,
-          otherRecordAggregateType,
-          otherRevisionAggregateType,
-          legacyRecordAggregateType,
-        ],
-      },
-    },
-  });
-  await prisma.revisionRecord.deleteMany({
-    where: {
-      aggregateType: {
-        in: [revisionAggregateType, otherRevisionAggregateType],
-      },
-    },
+    where: { aggregateType: legacyRecordAggregateType },
   });
 });
 
@@ -149,17 +49,17 @@ afterAll(async () => {
   await prisma.$disconnect();
 });
 
-runCapabilityRepositoryContract("Prisma", async (): Promise<CapabilityRepositoryEnvironment> => ({
-  records: new PrismaRepository(prisma, recordAggregateType, reviveRecord, capabilityCodec),
-  revisions: new PrismaRevisionedRepository(
-    prisma,
-    revisionAggregateType,
-    reviveRevision,
-    capabilityCodec,
-  ),
-}));
+runCapabilityRepositoryContract(
+  "Prisma",
+  async (): Promise<CapabilityRepositoryEnvironment> =>
+    createPrismaCapabilityPersistenceFixture(prisma, fixtureName).repository,
+);
 
-runCapabilityPersistenceTransactionContract("Prisma", createPrismaPersistenceEnvironment);
+runCapabilityPersistenceTransactionContract(
+  "Prisma",
+  async (): Promise<CapabilityPersistenceEnvironment> =>
+    createPrismaCapabilityPersistenceFixture(prisma, fixtureName).persistence,
+);
 
 describe("Prisma persistence codec boundary", () => {
   it("leaves legacy strings and tagged-looking objects to capability-specific revive", async () => {
