@@ -233,6 +233,24 @@ Dependency ordering rule: shared missing prerequisites precede capability implem
   - Unblocks: Recall detection and Production Run risk checkpoints.
   - Parallelizable: With Tasks 2.1 and 2.2.
 
+- [ ] **Task 2.3-H: Impact Persistence Integrity Hardening**
+  - Why: Persisted Impact Results must not be accepted merely because they are internally self-consistent.
+  - Depends on: Task 2.3, Task 1.1 persistence contracts, Task 1.2 observation/evidence contracts.
+  - Changes: Integrity hardening at `recordImpactAnalysis()` and its directly related persistence boundary only.
+  - Scope:
+    - Recompute and validate Impact Result from the canonical readSet.
+    - Validate frontier bucket membership.
+    - Validate `frontier.boundary`.
+    - Validate path `from/to` connectivity.
+    - Validate `subject` and `maxDepth`.
+    - Reject forged self-consistent results.
+    - Preserve InMemory / Prisma parity.
+    - Add replay / recovery regression tests.
+  - Forbidden: redesign Dependency Model, redesign Impact Model, modify Frozen Core, expand Recall Domain, or reopen Architecture.
+  - Verify: semantic recomputation, forged-result rejection, persistence integrity, replay/recovery, and cross-adapter parity.
+  - Exit Criteria: `recordImpactAnalysis()` cannot persist a result whose frontier/path/boundary cannot be derived from its readSet.
+  - Unblocks: production-grade Recall consumption and Production Run impact-based consumption.
+  - Global blocking status: NOT a global roadmap blocker; tasks without direct Impact Persistence Integrity dependency may continue.
 - [ ] **Task 2.4: Shared Prerequisite Integration Gate**
   - Why: Prove all missing prerequisites work together before capability layers begin.
   - Depends on: Tasks 2.1–2.3.
