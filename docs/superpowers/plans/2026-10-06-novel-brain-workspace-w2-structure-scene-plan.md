@@ -34,7 +34,7 @@ the test file and are not production surface.
 
 **Files:**
 - Create: `src/app/sceneReadQuery.ts`
-- Modify: `src/application/commandQueryBoundary.ts` (two query contracts under the existing `manuscript` capability)
+- Modify: `src/application/commandQueryBoundary.ts` (one query contract under the existing `manuscript` capability)
 - Modify: `src/http/routes.ts`
 - Test: `tests/app/taskW2SceneReadQuery.test.ts`
 - Test: `tests/http/taskW2SceneReadApi.test.ts`
