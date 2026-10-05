@@ -197,6 +197,16 @@ export const verificationTaskProfiles = {
     label: "[task:P3.2]",
     requiredGates: verificationGates,
   },
+  "P4.1": {
+    id: "P4.1",
+    label: "[task:P4.1]",
+    requiredGates: [
+      "domain",
+      "integration",
+      "cross-system",
+      "regression",
+    ],
+  },
   "7.4-7.5": {
     id: "7.4-7.5",
     label: "[task:7.4-7.5]",
