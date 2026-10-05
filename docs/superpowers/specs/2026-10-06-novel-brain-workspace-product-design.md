@@ -44,9 +44,18 @@ beginner product and no separate professional product.
 ### 1.2 The Author Holds Authority
 
 AI output is never narrative authority. The author may accept, edit, reject, branch, merge, defer,
-skip, or create directly. No interface affordance, convenience flow, or autonomy setting may weaken
-the Canonical Safety Floor: Domain Invariant, Mandatory Validation, Required Approval, Optimistic
-Concurrency Control, Commit Safety.
+skip, or author new content directly. All of those actions produce or change Draft, Proposal,
+Candidate, or Change Request artifacts. No interface affordance, convenience flow, or autonomy
+setting may weaken the Canonical Safety Floor: Domain Invariant, Mandatory Validation, Required
+Approval, Optimistic Concurrency Control, Commit Safety.
+
+```text
+Author direct authoring  = Draft / Proposal / Candidate / Change Request authoring
+Canonical State          = never changed by authoring; it changes only through
+                           Validation, Approval where required, and Commit
+```
+
+There is no interface path, including one labelled as direct creation, that writes Canonical State.
 
 ### 1.3 Navigation Resolves Focus; It Does Not Switch Pages
 
@@ -81,7 +90,7 @@ blocks work through the attention layer, and never converts a recommendation int
 
 ### 1.8 Derived Is Never a Second Truth
 
-Summaries, health, open questions, attention items, memory, diffs, and impact are derived and
+Summaries, health, open-question and concern projections, attention items, memory, diffs, and impact are derived and
 rebuildable. Any surface that shows derived data must make its staleness or degraded state visible.
 
 ### 1.9 Canonical Safety Is Visible
@@ -198,7 +207,7 @@ Lens rules:
 ### 3.4 Task
 
 A Task is a scoped intent attached to a Focus, for example rewriting one target span or resolving one
-open question. A Task may adapt AI assistance level. A Task never becomes a mandatory step, and
+proposal open question. A Task may adapt AI assistance level. A Task never becomes a mandatory step, and
 abandoning a Task never loses the Focus.
 
 ### 3.5 Pinned Context
@@ -283,15 +292,15 @@ Policy. There is never one interface per entry path.
 | Object | Default Mode | Primary Working Surface | Default Panels | Default Lens |
 | --- | --- | --- | --- | --- |
 | Novel | Explore | overview, health, current state | Attention / Recent / Health | Structure |
-| Story Foundation | Design | five-direction skeleton, proposals | Proposals / Open Questions | Semantic |
-| World / Character / Plot | Design | object content, proposals | Dependencies / Related Objects / Open Questions | Semantic |
+| Story Foundation | Design | five-direction skeleton, proposals | Proposals / Proposal Open Questions | Semantic |
+| World / Character / Plot | Design | object content, proposals | Dependencies / Related Objects / Proposal Open Questions | Semantic |
 | Arc / Chapter | Design | structure, plan | Scenes / Threads / Foreshadowing | Structure |
 | Scene | Write | manuscript editor | Context / Candidates / Validation / Dependencies | Structure |
 | Candidate | Review | compare, diff | Evidence / Impact / Validation | Impact |
 | Commit | Review | commit detail, change | Provenance / Impact / Audit | Impact |
 | Analysis | Analyze | impact, consistency report | Affected Objects / Findings / Repair Proposals | Impact |
 | Target Span | Write or Review | span editor or span provenance | Context / Candidates / Validation | Structure |
-| Proposal | Design | proposal workbench | Open Questions / Provenance / Adoption Preview | Semantic |
+| Proposal | Design | proposal workbench | Proposal Open Questions / Provenance / Adoption Preview | Semantic |
 | Change Set Revision | Review | revision content, diff | Validation / Approval / Impact / Gate | Impact |
 | Process | Explore | Process Center | Run Plan / Progress / Checkpoints / Failures | Process |
 
@@ -332,7 +341,7 @@ shown as co-primary.
 | 1 | Workspace Shell + Navigation | Identity Bar, Lens Rail | last session Focus, else Novel | per object | none (frame) | none | Lens switch, Search, Command, Pin, Focus stack | overlay only | defines resolution for all others |
 | 2 | Structure / Scene Write | Structure Lens | Novel, Arc, Chapter, or Scene | Write on Scene | manuscript editor | Context / Candidates / Validation / Dependencies | edit span, create candidate, request generation, open analysis | scene-local findings surface as badges | zoom in to Span, zoom out to Chapter |
 | 3 | Proposal / Adoption / Validation / Commit | Proposal or Candidate entry | Candidate or Change Set Revision | Review | compare and diff | Evidence / Impact / Validation / Gate | adopt, edit, reject, regenerate, revalidate, commit | gate blockers appear as attention items | commit opens the Commit object; commit detail is never replaced by the candidate surface |
-| 4 | Story Foundation | Identity Bar, Semantic Lens | Story Foundation | Design | five-direction skeleton + proposals | Proposals / Open Questions | choose entry mode, create proposal, explore, adopt partially | open questions surface non-blocking | proposal opens into subdomain 3 |
+| 4 | Story Foundation | Identity Bar, Semantic Lens | Story Foundation | Design | five-direction skeleton + proposals | Proposals / Proposal Open Questions | choose entry mode, create proposal, explore, adopt partially | proposal open questions surface non-blocking | proposal opens into subdomain 3 |
 | 5 | Process Center | Process Lens or Identity Bar | Process | Explore | Process Center | Run Plan / Progress / Checkpoints / Failures / Usage | plan, approve plan, start, pause, resume, cancel, retry, decide checkpoint | failures and human checkpoints surface as attention items | a checkpoint may emit a Focus transition into subdomain 3 |
 | 6 | Narrative State | Temporal Lens, Position Scrubber | Novel or Story Position | Explore or Analyze | state at position | Canon / Plan / State / Derived layers | navigate position, pin object, open owning object | stale or conflicting state surfaces as attention | aligning a state to a Scene moves Focus, never rewrites state |
 | 7 | Recall / Attention | Attention Layer, Novel overview | Novel | Explore | attention digest and item detail | Evidence / Source Object / Re-check | inspect, dismiss, snooze, confirm, ignore, why | is the attention layer | opening an item resolves a Focus; disposition never navigates |
@@ -347,8 +356,15 @@ shown as co-primary.
 Context Panels = derive(Object, Mode, Lens, Narrative State, Dependencies)
 ```
 
-Each panel declares its derivation source and can answer why it is present. Panels are ordered by the
-resolved Lens, then by relevance to the current Task.
+Each panel declares its derivation source and can answer why it is present.
+
+```text
+Default panel ordering   Lens, then Task relevance
+Author reordering        session preference override
+```
+
+A session override changes presentation order only. It never changes a panel's derivation, and it
+never changes a panel's content.
 
 ### 7.2 Panel Classes
 
@@ -359,7 +375,9 @@ Impact        what this change touches, at frontier and affected-object summary 
 Dependencies  declared and inferred relations
 Validation    mandatory / recommended / advisory findings
 Candidates    pending proposals relevant to the focused object
-Open Questions unresolved decisions, pending work, validation issues, risks, recommendations
+Open Questions and Concerns  aggregated proposal open questions plus other derived concerns;
+                             unresolved decisions, pending work, validation issues, risks,
+                             recommendations
 Related       adjacent narrative objects reachable in one step
 History       revision and audit trail for the focused object
 ```
@@ -534,17 +552,39 @@ Mandatory / Recommended / Advisory
 per finding: What, Why, Evidence, Scope, Severity, Suggested Action, Affected Object
 ```
 
-A recommended check that proves a mandatory risk upgrades to mandatory and blocks commit.
+A recommended check may reveal a finding whose subject is already governed by an existing mandatory
+policy. That finding may block the Commit Gate. The Validation Plan itself is never modified at
+runtime.
+
+```text
+Recommended check
+  may reveal a finding whose subject is already governed by an existing mandatory policy
+  that finding may block the Commit Gate
+  the Validation Plan is never modified at runtime
+
+Introducing or changing mandatory validation
+  requires a new Validation Plan Version and a new validation evaluation
+```
 
 ### 11.5 Commit Gate Presentation
 
-Before commit the interface shows what will be committed, which typed target, which Change Set
-Revision, mandatory validation status, required approval status, optimistic concurrency status, and
-target-specific invariant status.
+Before commit the interface shows what will be committed, which typed target, and the current status of
+each Commit Gate condition, presented independently:
 
 ```text
-Blocks commit:   mandatory validation failed, required approval missing,
-                 optimistic version conflict, target invariant violated
+Revision Validity   the Change Set Revision is valid and present
+Concurrency         optimistic concurrency holds against the expected current revision
+Invariant           target-specific invariants hold for every typed target
+Validation          mandatory validation status for this revision
+Approval            required approval status for this revision
+```
+
+Each gate presents its own status. The interface never collapses the five into a single indicator, and
+the author can see which gate is blocking and why.
+
+```text
+Blocks commit:   revision invalid, optimistic version conflict, target invariant violated,
+                 mandatory validation failed, required approval missing
 Does not block:  advisory finding, potential risk, optional validation not run,
                  author-deferred non-blocking issue
 ```
@@ -590,7 +630,7 @@ manuscript, and not a mandatory gate.
 
 ```text
 primary   five-direction skeleton and proposals
-panels    Proposals / Open Questions
+panels    Proposals / Proposal Open Questions
 actions   choose entry mode, create proposal, explore, deepen, refine, adopt partially
 ```
 
@@ -662,9 +702,11 @@ It never rewrites state and never merges Plan into Canon.
 ### 13.5 Editability
 
 ```text
-directly editable   Plan-layer intent, proposals, and design content
+authorable          Plan-layer intent, proposals, design content, candidates,
+                    and change requests
 read-only           Canon facts in canonical form, Derived output, run and audit state
-indirect only       Canon changes, which must pass Validation, Approval, and Commit
+never directly      Canonical State, which changes only through Validation,
+                    Approval where required, and Commit
 ```
 
 ### 13.6 Required Capabilities (capability level only)
@@ -878,7 +920,8 @@ Explicit separations
 ```text
 What it is
   an aggregation and presentation view of a Novel's creation entry state:
-  entry session, five-direction skeleton, proposal set, open questions, adoption state
+  entry mode and entry provenance, five-direction skeleton, proposal set,
+  proposal open questions, adoption state
 
 Ownership
   a projection derived by the Story Foundation context; it is not an aggregate
@@ -892,10 +935,11 @@ Who modifies it
 
 How it is presented
   a five-direction skeleton with per-direction proposal state, a proposal list by stage,
-  open questions, and partial adoption visibility
+  proposal open questions, and partial adoption visibility
 
 What is derived
-  skeleton completeness, proposal aggregation, open-question counts, adoption readiness
+  skeleton completeness, proposal aggregation, proposal open-question counts,
+  adoption readiness
 
 Source of truth
   NarrativeProposal revisions and AdoptionDecision records, and the Change Set once adoption begins
@@ -904,21 +948,30 @@ Explicit separations
   projection  != Proposal Aggregate
   Foundation  != Canon
   Foundation  != mandatory gate
+  the projection holds no Workspace Session state; entry mode and entry provenance describe
+  how a Novel's design started, not where an author's session is
 ```
 
-### 18.3 Open Questions / Narrative Health / Recall
+### 18.3 Open Questions and Concerns Projection / Narrative Health / Recall
 
 ```text
 What it is
-  Open Questions    a Novel-level attention projection whose categories are:
-                    unresolved decision, pending work, validation issue,
-                    potential risk, AI recommendation
+  Open Questions and Concerns Projection
+                    a Novel-level derived attention view that aggregates
+                    Proposal-local Open Questions together with other derived concerns.
+                    it does not own the underlying questions.
+                    its categories are: unresolved decision, pending work,
+                    validation issue, potential risk, AI recommendation
+  Proposal Open Questions
+                    a domain concept owned by the Proposal itself; it is not this
+                    projection, and this projection never rewrites it
   Narrative Health  a derived indicator set describing consistency and completeness signals
   Recall            the pipeline observe -> detect -> classify -> prioritize -> surface ->
                     explain -> author action -> re-check over derived evidence
 
 Ownership
   all three are derived; none owns narrative truth
+  Proposal-local Open Questions remain owned by their Proposal
   attention disposition state is owned by the Recall context and is derived-adjacent
   operational state, never narrative truth
 
@@ -936,13 +989,17 @@ How it is presented
 
 What is derived
   all items, categories, priorities, explanations, health indicators, and question aggregations
+  the projection aggregates Proposal-local Open Questions with other derived concerns;
+  it is a view over them, not a replacement for them
 
 Source of truth
   the underlying proposals, change set revisions, validation runs, review decisions, narrative
   commits, dependency relations, impact analyses, memory projections, and run signals
+  Proposal-local Open Questions remain sourced from and owned by their Proposal
 
 Explicit separations
   attention item    != narrative truth
+  the projection    != Proposal Open Questions, which is a domain concept owned by the Proposal
   disposition       != narrative mutation
   health indicator  != canon status
   recall            != workflow controller
