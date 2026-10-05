@@ -301,6 +301,16 @@ export const verificationTaskProfiles = {
       "regression",
     ],
   },
+  W2: {
+    id: "W2",
+    label: "[task:W2]",
+    requiredGates: [
+      "domain",
+      "integration",
+      "cross-system",
+      "regression",
+    ],
+  },
   "7.4-7.5": {
     id: "7.4-7.5",
     label: "[task:7.4-7.5]",

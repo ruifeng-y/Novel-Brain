@@ -81,7 +81,7 @@ const expectedOperationIds = {
       "manuscript.command.create-chapter",
       "manuscript.command.reorder-structure",
     ],
-    queries: ["manuscript.query.structural-navigation"],
+    queries: ["manuscript.query.structural-navigation", "manuscript.query.scene"],
   },
   workspace: {
     commands: [],

@@ -16,6 +16,7 @@ import {
 import { resolveFocus } from "../app/focusResolution";
 import { createStructuralNavigationQuery } from "../app/structuralNavigationQuery";
 import { createStructureCommandService } from "../app/structureCommandService";
+import { createSceneReadQuery } from "../app/sceneReadQuery";
 import type { FoundationWorkspaceFocus } from "../story/application/foundationWorkspaceContract";
 import type { FoundationGenerationOptions } from "../story/application/foundationEntryService";
 import {
@@ -260,6 +261,7 @@ const routeContracts = {
   recallAttention: "recall.query.recall-attention",
   recordRecallDisposition: "recall.command.record-recall-disposition",
   structuralNavigation: "manuscript.query.structural-navigation",
+  sceneRead: "manuscript.query.scene",
   createArc: "manuscript.command.create-arc",
   createChapter: "manuscript.command.create-chapter",
   reorderStructure: "manuscript.command.reorder-structure",
@@ -377,6 +379,7 @@ export function registerNovelBrainRoutes(
     chapters: dependencies.chapters,
     scenes: dependencies.scenes,
   });
+  const sceneRead = createSceneReadQuery({ scenes: dependencies.scenes });
 
   app.post("/novels", async (request, reply) => {
     const identity = novelBodyIdentitySchema.parse(request.body);
@@ -1031,6 +1034,26 @@ export function registerNovelBrainRoutes(
       async () => {
         const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
         const view = await structuralNavigation.getStructure(params.novelId);
+        return reply.code(200).send(view);
+      },
+    );
+  });
+
+  app.get("/novels/:novelId/scenes/:sceneId", async (request, reply) => {
+    const novelId = requiredPathParameter(request, "novelId");
+    return pipeline.execute(
+      routeContracts.sceneRead,
+      routeBoundaryContext(request, novelId),
+      routeBoundaryInput(request),
+      async () => {
+        const params = z
+          .object({ novelId: z.string().min(1), sceneId: z.string().min(1) })
+          .parse(request.params);
+        const view = await sceneRead.getScene({
+          novelId: params.novelId,
+          sceneId: params.sceneId,
+        });
+        if (!view) return reply.code(404).send({ error: "Scene not found" });
         return reply.code(200).send(view);
       },
     );
