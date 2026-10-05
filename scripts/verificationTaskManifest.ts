@@ -276,6 +276,7 @@ export const verificationTaskProfiles = {
     requiredGates: [
       "integration",
       "cross-system",
+      "recovery",
       "regression",
     ],
   },
