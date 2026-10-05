@@ -236,6 +236,7 @@ const routeContracts = {
   reviseProposal: "foundation.command.revise-proposal",
   adoptProposalContent: "foundation.command.adopt-proposal-content",
   createRunPlanRevision: "run.command.create-run-plan-revision",
+  approveRunPlan: "run.command.approve-run-plan",
   startRun: "run.command.start-run",
   pauseRun: "run.command.pause-run",
   resumeRun: "run.command.resume-run",
@@ -745,6 +746,27 @@ export function registerNovelBrainRoutes(
     ),
   );
 
+  app.post("/run-plans/:planRevisionId/approvals", async (request, reply) => {
+    const params = z.object({ planRevisionId: z.string().min(1) }).parse(request.params);
+    return pipeline.execute(
+      routeContracts.approveRunPlan,
+      routeBoundaryContext(request),
+      routeBoundaryInput(request),
+      async () => {
+        if (!productSurface) return productSurfaceUnavailable(reply);
+        const body = runPlanApprovalRequestSchema.parse(request.body);
+        const approval = await productSurface.approveRunPlan({
+          approvalId: body.approvalId,
+          planRevisionId: params.planRevisionId,
+          approvedBy: body.approvedBy,
+          approvedAt: body.approvedAt === undefined ? new Date() : new Date(body.approvedAt),
+          evidenceReferences: body.evidenceReferences,
+        });
+        return reply.code(201).send(approval);
+      },
+    );
+  });
+
   app.post("/runs", async (request, reply) =>
     pipeline.execute(
       routeContracts.startRun,
@@ -1115,6 +1137,13 @@ const startRunRequestSchema = z.object({
   novelId: z.string().min(1),
   runPlanRevisionId: z.string().min(1),
   createdAt: z.string().min(1).optional(),
+});
+
+const runPlanApprovalRequestSchema = z.object({
+  approvalId: z.string().min(1),
+  approvedBy: z.string().min(1),
+  approvedAt: z.string().min(1).optional(),
+  evidenceReferences: z.array(z.string().min(1)).min(1),
 });
 
 const runTransitionRequestSchema = z.object({

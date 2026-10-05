@@ -16,6 +16,14 @@
     activeView: "overview",
     foundationMode: "idea",
     foundationResult: undefined,
+    runChain: {
+      sceneId: "",
+      intent: "",
+      planGoal: "",
+      generationTaskId: "",
+      planRevisionId: "",
+      approvalId: "",
+    },
   };
 
   var STAGE_ORDER = ["frame", "explore", "deepen", "refine"];
@@ -516,30 +524,207 @@
 
   /* Run */
   function runControlsMarkup() {
+    var chain = appState.runChain;
     var value = appState.runId ? ' value="' + escapeHtml(appState.runId) + '"' : "";
     return (
+      '<div class="form-field"><label for="run-scene-id">场景 ID</label>' +
+      '<input id="run-scene-id" name="sceneId" type="text" autocomplete="off" spellcheck="false"' +
+      (chain.sceneId ? ' value="' + escapeHtml(chain.sceneId) + '"' : "") +
+      " /></div>" +
+      '<div class="form-field"><label for="run-intent">生成意图</label>' +
+      '<input id="run-intent" name="intent" type="text" autocomplete="off" spellcheck="false"' +
+      (chain.intent ? ' value="' + escapeHtml(chain.intent) + '"' : "") +
+      " /></div>" +
+      '<button type="button" class="button" data-action="create-generation-task" title="创建生成任务">创建生成任务</button>' +
+      '<div class="form-field"><label for="run-plan-goal">计划目标</label>' +
+      '<input id="run-plan-goal" name="goal" type="text" autocomplete="off" spellcheck="false"' +
+      (chain.planGoal ? ' value="' + escapeHtml(chain.planGoal) + '"' : "") +
+      " /></div>" +
+      '<button type="button" class="button" data-action="create-run-plan" title="创建计划修订">创建计划修订</button>' +
+      '<button type="button" class="button" data-action="approve-run-plan" title="批准计划修订">批准计划</button>' +
       '<div class="form-field"><label for="run-id">生产运行 ID</label>' +
       '<input id="run-id" name="runId" type="text" autocomplete="off" spellcheck="false"' +
       value +
       " /></div>" +
-      '<button type="button" class="button" data-action="load-run" title="载入生产运行状态">载入</button>'
+      '<button type="button" class="button" data-action="load-run" title="载入生产运行状态">载入</button>' +
+      '<button type="button" class="button" data-action="start-run" title="启动生产运行">启动生产运行</button>'
+    );
+  }
+
+  function runChainMarkup() {
+    var chain = appState.runChain;
+    return (
+      '<div class="panel"><h3 class="panel-title">创建链路</h3><dl class="data-grid">' +
+      row("生成任务", chain.generationTaskId ? code(chain.generationTaskId) : text("未创建")) +
+      row("计划修订", chain.planRevisionId ? code(chain.planRevisionId) : text("未创建")) +
+      row("计划批准", chain.approvalId ? code(chain.approvalId) : text("未批准")) +
+      row("生产运行", appState.runId ? code(appState.runId) : text("未启动")) +
+      "</dl></div>"
     );
   }
 
   function loadRun() {
     var outcome = mountSurface("run", runControlsMarkup());
-    if (!appState.runId) {
+    if (!appState.novelId) {
       renderState(outcome, "disabled", {
-        label: "需要生产运行 ID",
-        detail: "载入一个生产运行以查看其状态。",
+        label: "需要小说 ID",
+        detail: "请设置小说 ID。",
       });
+      return;
+    }
+    if (!appState.runId) {
+      var chain = appState.runChain;
+      if (!chain.generationTaskId && !chain.planRevisionId && !chain.approvalId) {
+        renderState(outcome, "empty", {
+          label: "尚无生产运行",
+          detail: "先创建生成任务与计划修订，批准后即可启动生产运行。",
+        });
+        return;
+      }
+      renderState(outcome, "success", { content: runChainMarkup() });
       return;
     }
     renderState(outcome, "loading");
     api("/runs/" + encodeURIComponent(appState.runId) + "/status")
       .then(function (view) {
-        renderState(outcome, "success", { content: runMarkup(view) });
+        renderState(outcome, "success", { content: runMarkup(view) + runChainMarkup() });
         setContextStatus("success", "生产运行已载入");
+      })
+      .catch(function (error) {
+        showError(outcome, error);
+      });
+  }
+
+  function createGenerationTask() {
+    var outcome = mountSurface("run", runControlsMarkup());
+    var sceneField = byId("run-scene-id");
+    var intentField = byId("run-intent");
+    var sceneId = sceneField ? sceneField.value.trim() : "";
+    var intent = intentField ? intentField.value.trim() : "";
+    if (!appState.novelId || !sceneId || !intent) {
+      renderState(outcome, "disabled", {
+        label: "需要小说、场景与意图",
+        detail: "请设置小说 ID、场景 ID 与生成意图。",
+      });
+      return;
+    }
+    appState.runChain.sceneId = sceneId;
+    appState.runChain.intent = intent;
+    if (outcome) renderState(outcome, "loading");
+    api("/novels/" + encodeURIComponent(appState.novelId) + "/generation-tasks", {
+      method: "POST",
+      body: {
+        id: newId("generation-task"),
+        operation: "scene_generation",
+        targetSceneId: sceneId,
+        intent: intent,
+        // POST /novels/:novelId/scenes assigns the initial scene revision as
+        // `<sceneId>:rev-1`; the frozen API exposes no scene query surface.
+        basedOnVersionSet: {
+          scene: { aggregateType: "Scene", objectId: sceneId, revisionId: sceneId + ":rev-1" },
+        },
+      },
+    })
+      .then(function (task) {
+        appState.runChain.generationTaskId = task && task.id ? task.id : "";
+        setContextStatus("success", "生成任务已创建");
+        loadRun();
+      })
+      .catch(function (error) {
+        showError(outcome, error);
+      });
+  }
+
+  function createRunPlan() {
+    var outcome = mountSurface("run", runControlsMarkup());
+    var goalField = byId("run-plan-goal");
+    var goal = goalField ? goalField.value.trim() : "";
+    var chain = appState.runChain;
+    if (!appState.novelId || !chain.generationTaskId || !goal) {
+      renderState(outcome, "disabled", {
+        label: "需要生成任务与计划目标",
+        detail: "请先创建生成任务，并填写计划目标。",
+      });
+      return;
+    }
+    chain.planGoal = goal;
+    var revisionId = newId("plan-revision");
+    if (outcome) renderState(outcome, "loading");
+    api("/run-plans", {
+      method: "POST",
+      body: {
+        id: revisionId,
+        planId: newId("plan"),
+        novelId: appState.novelId,
+        revisionNumber: 1,
+        goal: goal,
+        steps: [
+          { id: "step-1", ordinal: 1, generationTaskId: chain.generationTaskId, dependsOn: [] },
+        ],
+      },
+    })
+      .then(function (revision) {
+        chain.planRevisionId = revision && revision.id ? revision.id : revisionId;
+        chain.approvalId = "";
+        setContextStatus("success", "计划修订已创建");
+        loadRun();
+      })
+      .catch(function (error) {
+        showError(outcome, error);
+      });
+  }
+
+  function approveRunPlan() {
+    var outcome = mountSurface("run", runControlsMarkup());
+    var chain = appState.runChain;
+    if (!chain.planRevisionId) {
+      renderState(outcome, "disabled", {
+        label: "需要计划修订",
+        detail: "请先创建计划修订，再批准计划。",
+      });
+      return;
+    }
+    if (outcome) renderState(outcome, "loading");
+    api("/run-plans/" + encodeURIComponent(chain.planRevisionId) + "/approvals", {
+      method: "POST",
+      body: {
+        approvalId: newId("approval"),
+        approvedBy: appState.authorId || "author",
+        evidenceReferences: [chain.planRevisionId],
+      },
+    })
+      .then(function (approval) {
+        chain.approvalId = approval && approval.id ? approval.id : "";
+        setContextStatus("success", "计划已批准");
+        loadRun();
+      })
+      .catch(function (error) {
+        showError(outcome, error);
+      });
+  }
+
+  function startRun() {
+    var outcome = mountSurface("run", runControlsMarkup());
+    var chain = appState.runChain;
+    if (!appState.novelId || !chain.planRevisionId || !chain.approvalId) {
+      renderState(outcome, "disabled", {
+        label: "需要已批准的计划修订",
+        detail: "请先创建计划修订并批准，再启动生产运行。",
+      });
+      return;
+    }
+    var runIdField = byId("run-id");
+    var runId = runIdField && runIdField.value.trim() ? runIdField.value.trim() : newId("run");
+    saveRunId(runId);
+    if (runIdField) runIdField.value = runId;
+    if (outcome) renderState(outcome, "loading");
+    api("/runs", {
+      method: "POST",
+      body: { id: runId, novelId: appState.novelId, runPlanRevisionId: chain.planRevisionId },
+    })
+      .then(function (view) {
+        renderState(outcome, "success", { content: runMarkup(view) + runChainMarkup() });
+        setContextStatus("success", "生产运行已启动");
       })
       .catch(function (error) {
         showError(outcome, error);
@@ -744,6 +929,22 @@
       var input = byId("run-id");
       saveRunId(input ? input.value : "");
       loadRun();
+      return;
+    }
+    if (action === "create-generation-task") {
+      createGenerationTask();
+      return;
+    }
+    if (action === "create-run-plan") {
+      createRunPlan();
+      return;
+    }
+    if (action === "approve-run-plan") {
+      approveRunPlan();
+      return;
+    }
+    if (action === "start-run") {
+      startRun();
       return;
     }
     if (action === "pause-run") {

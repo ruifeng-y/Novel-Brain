@@ -31,7 +31,9 @@ import type {
   ProposalWorkflowTransition,
 } from "../story/domain/proposalWorkflow";
 import {
+  createRunPlanApproval,
   createRunPlanRevision as buildRunPlanRevision,
+  type RunPlanApproval,
   type RunPlanRevision,
   type RunPlanStep,
 } from "../production/domain/runPlan";
@@ -45,6 +47,7 @@ import {
 import {
   loadApprovedRunPlanRevision,
   saveProductionRun,
+  saveRunPlanApproval,
   saveRunPlanRevision,
 } from "../production/application/runPlanService";
 import {
@@ -158,6 +161,14 @@ export interface CreateRunCommand {
   readonly createdAt: Date;
 }
 
+export interface ApproveRunPlanCommand {
+  readonly approvalId: string;
+  readonly planRevisionId: string;
+  readonly approvedBy: string;
+  readonly approvedAt: Date;
+  readonly evidenceReferences: readonly string[];
+}
+
 export interface RunTransitionCommand {
   readonly runId: string;
   readonly at: Date;
@@ -200,6 +211,7 @@ export interface ProductSurfaceCommandService {
 
 export interface RunRecallProductSurface {
   createRunPlanRevision(input: CreateRunPlanRevisionCommand): Promise<RunPlanRevision>;
+  approveRunPlan(input: ApproveRunPlanCommand): Promise<RunPlanApproval>;
   startRun(input: CreateRunCommand): Promise<RunProductView>;
   pauseRun(input: RunTransitionCommand): Promise<RunProductView>;
   resumeRun(input: RunTransitionCommand): Promise<RunProductView>;
@@ -407,6 +419,29 @@ export function createProductSurfaceCommandService(
 
     async createRunPlanRevision(input) {
       return saveRunPlanRevision(dependencies.runPersistence, buildRunPlanRevision({ ...input }));
+    },
+
+    async approveRunPlan(input) {
+      const planRevisionId = requiredText(input.planRevisionId, "planRevisionId");
+      if (input.evidenceReferences.length === 0) {
+        throw new Error("at least one evidence reference is required to approve a Run Plan");
+      }
+      input.evidenceReferences.forEach((reference, index) => {
+        requiredText(reference, `evidenceReferences[${index}]`);
+      });
+      const revision = await dependencies.runPersistence.planRevisions.findById(planRevisionId);
+      if (!revision) throw new Error("Run Plan Revision not found");
+
+      const approval = createRunPlanApproval({
+        id: requiredText(input.approvalId, "approvalId"),
+        revision,
+        approvedBy: requiredText(input.approvedBy, "approvedBy"),
+        approvedAt: input.approvedAt,
+      });
+      // The frozen approval shape has no evidence slot; the references are
+      // validated here and the revision reference is what binds the approval
+      // to the immutable execution baseline.
+      return saveRunPlanApproval(dependencies.runPersistence, approval);
     },
 
     async startRun(input) {
