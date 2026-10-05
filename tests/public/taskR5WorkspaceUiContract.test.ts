@@ -125,8 +125,8 @@ describe("[task:R5] [cross-system] foundation browser surface sends frozen found
     expect(source).toContain('data-mode="idea"');
     expect(source).toContain('data-mode="existing_text"');
     expect(source).toContain('data-mode="blank"');
-    expect(source).toContain("Empty narrative state");
-    expect(source).toContain("Create empty state");
+    expect(source).toContain("空的叙事状态");
+    expect(source).toContain("创建空状态");
     expect(source).not.toContain("Start proposal");
   });
 

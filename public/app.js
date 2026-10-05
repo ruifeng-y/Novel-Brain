@@ -20,15 +20,26 @@
 
   var STAGE_ORDER = ["frame", "explore", "deepen", "refine"];
 
+  var STAGE_LABELS = {
+    frame: "框架",
+    explore: "探索",
+    deepen: "深化",
+    refine: "精炼",
+  };
+
+  function stageLabel(stage) {
+    return STAGE_LABELS[stage] || stage;
+  }
+
   var STATE_MARKUP = {
     loading:
-      '<div class="state-block" data-state="loading"><span class="pulse" aria-hidden="true"></span><span class="state-label">Loading</span></div>',
+      '<div class="state-block" data-state="loading"><span class="pulse" aria-hidden="true"></span><span class="state-label">加载中</span></div>',
     empty:
-      '<div class="state-block" data-state="empty"><span class="state-label">No items</span><span class="state-detail"></span><div class="state-actions" data-role="state-actions"></div></div>',
+      '<div class="state-block" data-state="empty"><span class="state-label">暂无内容</span><span class="state-detail"></span><div class="state-actions" data-role="state-actions"></div></div>',
     error:
-      '<div class="state-block" data-state="error"><span class="state-label">Request failed</span><span class="state-detail"></span><div class="state-actions"><button type="button" class="button" data-action="retry" title="Retry request">Retry</button></div></div>',
+      '<div class="state-block" data-state="error"><span class="state-label">请求失败</span><span class="state-detail"></span><div class="state-actions"><button type="button" class="button" data-action="retry" title="重试请求">重试</button></div></div>',
     disabled:
-      '<div class="state-block" data-state="disabled"><span class="state-label">Unavailable</span><span class="state-detail"></span></div>',
+      '<div class="state-block" data-state="disabled"><span class="state-label">不可用</span><span class="state-detail"></span></div>',
     success: '<div class="state-block" data-state="success"></div>',
   };
 
@@ -113,7 +124,7 @@
   }
 
   function showError(outcome, error) {
-    var message = error && error.message ? error.message : "Request failed";
+    var message = error && error.message ? error.message : "请求失败";
     setContextStatus("error", message);
     renderState(outcome, "error", { detail: message });
   }
@@ -154,8 +165,8 @@
   function requireNovel(outcome) {
     if (appState.novelId) return true;
     renderState(outcome, "disabled", {
-      label: "Novel id required",
-      detail: "Set a Novel id.",
+      label: "需要小说 ID",
+      detail: "请设置小说 ID。",
     });
     return false;
   }
@@ -175,7 +186,7 @@
     api("/workspace/" + encodeURIComponent(appState.novelId))
       .then(function (view) {
         renderState(outcome, "success", { content: overviewMarkup(view) });
-        setContextStatus("success", "Workspace loaded");
+        setContextStatus("success", "工作区已载入");
       })
       .catch(function (error) {
         showError(outcome, error);
@@ -192,17 +203,17 @@
     var focus = proposal.focus || {};
     var truth = view.sharedTruth || {};
     return (
-      '<div class="panel"><h3 class="panel-title">Workspace</h3><dl class="data-grid">' +
-      row("Novel", code(view.novelId)) +
-      row("Focus object", text(focus.object)) +
-      row("Focus mode", text(focus.mode)) +
-      row("Proposals", text(proposals.length)) +
-      row("Open questions", text(openQuestions.length)) +
-      row("Run status", text(run ? run.status : "none")) +
-      row("Attention items", text(items.length)) +
-      row("Truth owner", text(truth.owner)) +
+      '<div class="panel"><h3 class="panel-title">工作区</h3><dl class="data-grid">' +
+      row("小说", code(view.novelId)) +
+      row("焦点对象", text(focus.object)) +
+      row("焦点模式", text(focus.mode)) +
+      row("提案", text(proposals.length)) +
+      row("待解决问题", text(openQuestions.length)) +
+      row("生产运行状态", text(run ? run.status : "无")) +
+      row("关注项", text(items.length)) +
+      row("真相所有者", text(truth.owner)) +
       "</dl></div>" +
-      '<div class="panel"><h3 class="panel-title">Proposals</h3>' +
+      '<div class="panel"><h3 class="panel-title">提案</h3>' +
       listOrEmpty(
         proposals,
         function (proposal) {
@@ -210,11 +221,11 @@
             '<li><span class="item-main">' +
             escapeHtml(proposal.id) +
             '<span class="item-meta">' +
-            escapeHtml(proposal.stage || "") +
+            escapeHtml(stageLabel(proposal.stage) || "") +
             "</span></span></li>"
           );
         },
-        "No proposals",
+        "暂无提案",
       ) +
       "</div>"
     );
@@ -222,8 +233,8 @@
 
   /* Foundation */
   var FOUNDATION_STATUS_LABELS = {
-    proposal_created: "Proposal created",
-    empty_narrative_state: "Empty narrative state",
+    proposal_created: "提案已创建",
+    empty_narrative_state: "空的叙事状态",
   };
 
   function stageFor(proposalId) {
@@ -251,30 +262,30 @@
 
   function foundationControlsMarkup() {
     return (
-      '<div class="segmented" role="group" aria-label="Foundation mode">' +
-      '<button type="button" class="segmented-item" data-mode="idea" data-action="set-foundation-mode" title="Idea">Idea</button>' +
-      '<button type="button" class="segmented-item" data-mode="existing_text" data-action="set-foundation-mode" title="Existing text">Existing text</button>' +
-      '<button type="button" class="segmented-item" data-mode="blank" data-action="set-foundation-mode" title="Blank">Blank</button>' +
+      '<div class="segmented" role="group" aria-label="故事基础模式">' +
+      '<button type="button" class="segmented-item" data-mode="idea" data-action="set-foundation-mode" title="灵感">灵感</button>' +
+      '<button type="button" class="segmented-item" data-mode="existing_text" data-action="set-foundation-mode" title="已有文本">已有文本</button>' +
+      '<button type="button" class="segmented-item" data-mode="blank" data-action="set-foundation-mode" title="空白">空白</button>' +
       "</div>" +
       '<div class="form-field" data-role="foundation-input"></div>' +
-      '<button type="button" class="button" data-action="create-foundation" title="Create proposal" disabled>Create proposal</button>'
+      '<button type="button" class="button" data-action="create-foundation" title="创建提案" disabled>创建提案</button>'
     );
   }
 
   function foundationInputMarkup() {
     if (appState.foundationMode === "idea") {
       return (
-        '<label for="foundation-idea">Idea</label>' +
+        '<label for="foundation-idea">灵感</label>' +
         '<textarea id="foundation-idea" name="idea" rows="2" spellcheck="false"></textarea>'
       );
     }
     if (appState.foundationMode === "existing_text") {
       return (
-        '<label for="foundation-text">Existing text</label>' +
+        '<label for="foundation-text">已有文本</label>' +
         '<textarea id="foundation-text" name="text" rows="2" spellcheck="false"></textarea>'
       );
     }
-    return '<p class="inline-empty">Empty narrative state</p>';
+    return '<p class="inline-empty">空的叙事状态</p>';
   }
 
   function renderFoundationForm() {
@@ -290,7 +301,7 @@
     if (input) input.innerHTML = foundationInputMarkup();
     var submit = surface.querySelector('[data-action="create-foundation"]');
     if (submit) {
-      var label = appState.foundationMode === "blank" ? "Create empty state" : "Create proposal";
+      var label = appState.foundationMode === "blank" ? "创建空状态" : "创建提案";
       submit.textContent = label;
       submit.setAttribute("title", label);
     }
@@ -350,15 +361,15 @@
         var openQuestions = Array.isArray(proposal.openQuestions) ? proposal.openQuestions : [];
         if (proposals.length === 0) {
           renderState(outcome, "empty", {
-            label: "No proposals",
-            detail: "No Narrative Proposal exists for this Novel.",
+            label: "暂无提案",
+            detail: "该小说尚无叙事提案。",
           });
         } else {
           renderState(outcome, "success", {
             content: foundationMarkup(proposals, openQuestions),
           });
         }
-        setContextStatus("success", "Foundation loaded");
+        setContextStatus("success", "故事基础已载入");
       })
       .catch(function (error) {
         showError(outcome, error);
@@ -368,11 +379,11 @@
   function foundationMarkup(proposals, openQuestions) {
     return (
       foundationResultMarkup() +
-      '<div class="panel"><h3 class="panel-title">Proposals</h3>' +
+      '<div class="panel"><h3 class="panel-title">提案</h3>' +
       '<ul class="item-list">' +
       proposals.map(proposalItemMarkup).join("") +
       "</ul></div>" +
-      '<div class="panel"><h3 class="panel-title">Open questions</h3>' +
+      '<div class="panel"><h3 class="panel-title">待解决问题</h3>' +
       listOrEmpty(
         openQuestions,
         function (entry) {
@@ -383,7 +394,7 @@
             "</span></li>"
           );
         },
-        "No open questions",
+        "暂无待解决问题",
       ) +
       "</div>"
     );
@@ -392,27 +403,29 @@
   function proposalItemMarkup(proposal) {
     var stage = stageFor(proposal.id);
     var next = nextStage(stage);
+    var stageText = stageLabel(stage);
+    var nextText = next ? stageLabel(next) : "";
     var actions = next
       ? '<input class="inline-input" type="text" data-role="question" data-proposal-id="' +
         escapeHtml(proposal.id) +
-        '" aria-label="Open question" title="Open question" />' +
+        '" aria-label="待解决问题" title="待解决问题" />' +
         '<button type="button" class="button" data-action="advance-proposal" data-proposal-id="' +
         escapeHtml(proposal.id) +
         '" data-from="' +
         escapeHtml(stage) +
         '" data-to="' +
         escapeHtml(next) +
-        '" title="Advance to ' +
-        escapeHtml(next) +
-        '" disabled>Advance to ' +
-        escapeHtml(next) +
+        '" title="推进到' +
+        escapeHtml(nextText) +
+        '" disabled>推进到' +
+        escapeHtml(nextText) +
         "</button>"
-      : '<span class="boundary-badge">' + escapeHtml(stage) + "</span>";
+      : '<span class="boundary-badge">' + escapeHtml(stageText) + "</span>";
     return (
       '<li><span class="item-main">' +
       escapeHtml(proposal.id) +
       '<span class="item-meta">' +
-      escapeHtml(stage) +
+      escapeHtml(stageText) +
       " / " +
       escapeHtml(proposal.currentRevisionId || "") +
       "</span></span>" +
@@ -428,12 +441,12 @@
     var created = result.status === "proposal_created";
     var label = FOUNDATION_STATUS_LABELS[result.status] || result.status;
     return (
-      '<div class="panel"><h3 class="panel-title">Last entry</h3><dl class="data-grid">' +
-      row("Status", text(result.status)) +
-      row("Outcome", text(label)) +
-      row("Mode", text(result.mode)) +
-      (created ? row("Proposal", code(result.proposalId)) : "") +
-      row("Automatic commit", text(String(result.automaticCommit))) +
+      '<div class="panel"><h3 class="panel-title">最近一次录入</h3><dl class="data-grid">' +
+      row("状态", text(result.status)) +
+      row("结果", text(label)) +
+      row("模式", text(result.mode)) +
+      (created ? row("提案", code(result.proposalId)) : "") +
+      row("自动提交", text(String(result.automaticCommit))) +
       "</dl></div>"
     );
   }
@@ -493,7 +506,7 @@
     )
       .then(function (result) {
         saveStage(proposalId, result.stage || to);
-        setContextStatus("success", "Stage advanced");
+        setContextStatus("success", "阶段已推进");
         loadFoundation();
       })
       .catch(function (error) {
@@ -505,11 +518,11 @@
   function runControlsMarkup() {
     var value = appState.runId ? ' value="' + escapeHtml(appState.runId) + '"' : "";
     return (
-      '<div class="form-field"><label for="run-id">Run id</label>' +
+      '<div class="form-field"><label for="run-id">生产运行 ID</label>' +
       '<input id="run-id" name="runId" type="text" autocomplete="off" spellcheck="false"' +
       value +
       " /></div>" +
-      '<button type="button" class="button" data-action="load-run" title="Load run status">Load</button>'
+      '<button type="button" class="button" data-action="load-run" title="载入生产运行状态">载入</button>'
     );
   }
 
@@ -517,8 +530,8 @@
     var outcome = mountSurface("run", runControlsMarkup());
     if (!appState.runId) {
       renderState(outcome, "disabled", {
-        label: "Run id required",
-        detail: "Load a Run to inspect its status.",
+        label: "需要生产运行 ID",
+        detail: "载入一个生产运行以查看其状态。",
       });
       return;
     }
@@ -526,7 +539,7 @@
     api("/runs/" + encodeURIComponent(appState.runId) + "/status")
       .then(function (view) {
         renderState(outcome, "success", { content: runMarkup(view) });
-        setContextStatus("success", "Run loaded");
+        setContextStatus("success", "生产运行已载入");
       })
       .catch(function (error) {
         showError(outcome, error);
@@ -540,22 +553,22 @@
     var canPause = run.status === "running";
     var canResume = run.status === "paused";
     return (
-      '<div class="panel"><h3 class="panel-title">Run</h3><dl class="data-grid">' +
-      row("Run", code(run.id || view.runId)) +
-      row("Novel", text(run.novelId || view.novelId)) +
-      row("Status", text(run.status)) +
-      row("Narrative state owner", text(boundary.narrativeStateOwner)) +
-      row("Owns narrative truth", text(String(boundary.ownsNarrativeTruth))) +
+      '<div class="panel"><h3 class="panel-title">生产运行</h3><dl class="data-grid">' +
+      row("生产运行", code(run.id || view.runId)) +
+      row("小说", text(run.novelId || view.novelId)) +
+      row("状态", text(run.status)) +
+      row("叙事状态所有者", text(boundary.narrativeStateOwner)) +
+      row("拥有叙事真相", text(String(boundary.ownsNarrativeTruth))) +
       "</dl>" +
       '<div class="form-row run-actions">' +
-      '<button type="button" class="button" data-action="pause-run" title="Pause run"' +
+      '<button type="button" class="button" data-action="pause-run" title="暂停生产运行"' +
       (canPause ? "" : " disabled") +
-      ">Pause</button>" +
-      '<button type="button" class="button" data-action="resume-run" title="Resume run"' +
+      ">暂停</button>" +
+      '<button type="button" class="button" data-action="resume-run" title="继续生产运行"' +
       (canResume ? "" : " disabled") +
-      ">Resume</button>" +
+      ">继续</button>" +
       "</div></div>" +
-      '<div class="panel"><h3 class="panel-title">Steps</h3>' +
+      '<div class="panel"><h3 class="panel-title">步骤</h3>' +
       listOrEmpty(
         steps,
         function (step) {
@@ -567,7 +580,7 @@
             "</span></span></li>"
           );
         },
-        "No steps",
+        "暂无步骤",
       ) +
       "</div>"
     );
@@ -599,13 +612,13 @@
         var items = Array.isArray(view.items) ? view.items : [];
         if (items.length === 0) {
           renderState(outcome, "empty", {
-            label: "No attention items",
-            detail: "Nothing is flagged for this Novel.",
+            label: "暂无关注项",
+            detail: "该小说目前没有标记项。",
           });
         } else {
           renderState(outcome, "success", { content: recallMarkup(view, items) });
         }
-        setContextStatus("success", "Recall loaded");
+        setContextStatus("success", "召回已载入");
       })
       .catch(function (error) {
         showError(outcome, error);
@@ -615,15 +628,15 @@
   function recallMarkup(view, items) {
     var authority = view.authority || {};
     return (
-      '<div class="panel"><h3 class="panel-title">Attention</h3><dl class="data-grid">' +
-      row("Items", text(items.length)) +
-      row("Authoritative", text(String(authority.authoritative))) +
-      row("May mutate narrative truth", text(String(authority.mayMutateNarrativeTruth))) +
-      row("May create task directly", text(String(authority.mayCreateTaskDirectly))) +
-      row("May commit", text(String(authority.mayCommit))) +
-      row("Proposed action channel", text(authority.proposedActionChannel)) +
+      '<div class="panel"><h3 class="panel-title">关注</h3><dl class="data-grid">' +
+      row("条目", text(items.length)) +
+      row("具有权威性", text(String(authority.authoritative))) +
+      row("可修改叙事真相", text(String(authority.mayMutateNarrativeTruth))) +
+      row("可直接创建任务", text(String(authority.mayCreateTaskDirectly))) +
+      row("可提交", text(String(authority.mayCommit))) +
+      row("建议动作通道", text(authority.proposedActionChannel)) +
       "</dl></div>" +
-      '<div class="panel"><h3 class="panel-title">Items</h3>' +
+      '<div class="panel"><h3 class="panel-title">条目</h3>' +
       listOrEmpty(
         items,
         function (item) {
@@ -636,7 +649,7 @@
             "</span></span></li>"
           );
         },
-        "No attention items",
+        "暂无关注项",
       ) +
       "</div>"
     );
@@ -678,7 +691,7 @@
       localStorage.setItem(STORAGE_KEYS.novelId, appState.novelId);
       localStorage.setItem(STORAGE_KEYS.authorId, appState.authorId);
     } catch (error) {
-      setContextStatus("error", "Identity not persisted");
+      setContextStatus("error", "身份未持久化");
     }
   }
 
@@ -699,7 +712,7 @@
     try {
       localStorage.setItem(STORAGE_KEYS.runId, appState.runId);
     } catch (error) {
-      setContextStatus("error", "Run id not persisted");
+      setContextStatus("error", "生产运行 ID 未持久化");
     }
   }
 
@@ -766,7 +779,7 @@
       });
       input.addEventListener("change", function () {
         persistIdentity();
-        setContextStatus("success", "Identity saved");
+        setContextStatus("success", "身份已保存");
         loadView(appState.activeView);
       });
     });

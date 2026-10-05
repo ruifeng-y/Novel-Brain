@@ -1,20 +1,20 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
   <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>Novel Brain Workspace</title>
+    <title>小说大脑工作区</title>
     <link rel="stylesheet" href="/styles.css" />
   </head>
   <body>
     <div class="app-shell">
       <header class="context-bar" data-context="workspace-identity">
         <div class="context-field">
-          <label for="novel-id">Novel</label>
+          <label for="novel-id">小说</label>
           <input id="novel-id" name="novelId" type="text" autocomplete="off" spellcheck="false" />
         </div>
         <div class="context-field">
-          <label for="author-id">Author</label>
+          <label for="author-id">作者</label>
           <input id="author-id" name="authorId" type="text" autocomplete="off" spellcheck="false" />
         </div>
         <button
@@ -22,8 +22,8 @@
           class="icon-button"
           type="button"
           data-action="reload"
-          title="Reload workspace"
-          aria-label="Reload workspace"
+          title="重新载入工作区"
+          aria-label="重新载入工作区"
         >
           <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
             <path d="M13 8a5 5 0 1 1-1.6-3.7" fill="none" stroke="currentColor" stroke-width="1.5" />
@@ -34,44 +34,44 @@
       </header>
 
       <div class="workspace-body">
-        <nav class="view-nav" aria-label="Workspace views">
-          <button type="button" class="nav-item" data-nav="overview" title="Overview">
+        <nav class="view-nav" aria-label="工作区视图">
+          <button type="button" class="nav-item" data-nav="overview" title="概览">
             <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
               <rect x="2" y="2" width="5" height="5" fill="none" stroke="currentColor" stroke-width="1.5" />
               <rect x="9" y="2" width="5" height="5" fill="none" stroke="currentColor" stroke-width="1.5" />
               <rect x="2" y="9" width="5" height="5" fill="none" stroke="currentColor" stroke-width="1.5" />
               <rect x="9" y="9" width="5" height="5" fill="none" stroke="currentColor" stroke-width="1.5" />
             </svg>
-            <span>Overview</span>
+            <span>概览</span>
           </button>
-          <button type="button" class="nav-item" data-nav="foundation" title="Foundation">
+          <button type="button" class="nav-item" data-nav="foundation" title="故事基础">
             <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
               <path d="M3 13V3h10v10" fill="none" stroke="currentColor" stroke-width="1.5" />
               <path d="M6 13V8h4v5" fill="none" stroke="currentColor" stroke-width="1.5" />
             </svg>
-            <span>Foundation</span>
+            <span>故事基础</span>
           </button>
-          <button type="button" class="nav-item" data-nav="run" title="Run">
+          <button type="button" class="nav-item" data-nav="run" title="生产运行">
             <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
               <path d="M5 3.5 12 8l-7 4.5z" fill="none" stroke="currentColor" stroke-width="1.5" />
             </svg>
-            <span>Run</span>
+            <span>生产运行</span>
           </button>
-          <button type="button" class="nav-item" data-nav="recall" title="Recall">
+          <button type="button" class="nav-item" data-nav="recall" title="召回">
             <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
               <path d="M1.5 8S4 3.5 8 3.5 14.5 8 14.5 8 12 12.5 8 12.5 1.5 8 1.5 8z" fill="none" stroke="currentColor" stroke-width="1.5" />
               <circle cx="8" cy="8" r="1.75" fill="none" stroke="currentColor" stroke-width="1.5" />
             </svg>
-            <span>Recall</span>
+            <span>召回</span>
           </button>
         </nav>
 
         <main class="view-stack">
           <section class="view" data-view="overview" aria-hidden="false">
             <header class="view-header">
-              <h2>Overview</h2>
+              <h2>概览</h2>
               <div class="view-actions">
-                <button type="button" class="icon-button" data-action="refresh" title="Refresh overview" aria-label="Refresh overview">
+                <button type="button" class="icon-button" data-action="refresh" title="刷新概览" aria-label="刷新概览">
                   <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
                     <path d="M13 8a5 5 0 1 1-1.6-3.7" fill="none" stroke="currentColor" stroke-width="1.5" />
                     <path d="M13 2.5V5.5H10" fill="none" stroke="currentColor" stroke-width="1.5" />
@@ -84,9 +84,9 @@
 
           <section class="view" data-view="foundation" aria-hidden="true" hidden>
             <header class="view-header">
-              <h2>Foundation</h2>
+              <h2>故事基础</h2>
               <div class="view-actions">
-                <button type="button" class="icon-button" data-action="refresh" title="Refresh foundation" aria-label="Refresh foundation">
+                <button type="button" class="icon-button" data-action="refresh" title="刷新故事基础" aria-label="刷新故事基础">
                   <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
                     <path d="M13 8a5 5 0 1 1-1.6-3.7" fill="none" stroke="currentColor" stroke-width="1.5" />
                     <path d="M13 2.5V5.5H10" fill="none" stroke="currentColor" stroke-width="1.5" />
@@ -99,9 +99,9 @@
 
           <section class="view" data-view="run" aria-hidden="true" hidden>
             <header class="view-header">
-              <h2>Run</h2>
+              <h2>生产运行</h2>
               <div class="view-actions">
-                <button type="button" class="icon-button" data-action="refresh" title="Refresh run" aria-label="Refresh run">
+                <button type="button" class="icon-button" data-action="refresh" title="刷新生产运行" aria-label="刷新生产运行">
                   <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
                     <path d="M13 8a5 5 0 1 1-1.6-3.7" fill="none" stroke="currentColor" stroke-width="1.5" />
                     <path d="M13 2.5V5.5H10" fill="none" stroke="currentColor" stroke-width="1.5" />
@@ -114,10 +114,10 @@
 
           <section class="view" data-view="recall" aria-hidden="true" data-recall-boundary="read-only" hidden>
             <header class="view-header">
-              <h2>Recall</h2>
+              <h2>召回</h2>
               <div class="view-actions">
-                <span class="boundary-badge" data-role="recall-boundary">Read-only</span>
-                <button type="button" class="icon-button" data-action="refresh" title="Refresh recall" aria-label="Refresh recall">
+                <span class="boundary-badge" data-role="recall-boundary">只读</span>
+                <button type="button" class="icon-button" data-action="refresh" title="刷新召回" aria-label="刷新召回">
                   <svg viewBox="0 0 16 16" aria-hidden="true" focusable="false">
                     <path d="M13 8a5 5 0 1 1-1.6-3.7" fill="none" stroke="currentColor" stroke-width="1.5" />
                     <path d="M13 2.5V5.5H10" fill="none" stroke="currentColor" stroke-width="1.5" />
