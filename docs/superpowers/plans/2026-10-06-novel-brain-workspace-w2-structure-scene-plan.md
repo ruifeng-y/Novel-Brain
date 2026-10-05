@@ -128,7 +128,7 @@ export function createTargetSpanResolutionQuery(dependencies: {
     readonly novelId: string;
     readonly sceneId: string;
     readonly span: TargetSpan;
-  }): Promise<SpanResolutionView>;
+  }): Promise<SpanResolutionView | undefined>;
 };
 ```
 
@@ -139,7 +139,10 @@ resolveTargetSpan succeeds                      -> resolvable
 anchor absent from scene.spanAnchors            -> missing      reason: anchor not found
 anchor.revisionId !== scene.currentRevisionId   -> drifted      reason: revision moved
 anchor text or hash disagrees with the scene    -> drifted      reason: anchor content moved
-scene not found or belongs to another novel     -> missing      reason: scene not found
+scene not found or belongs to another novel     -> undefined    -> the route answers 404 with the same
+                                                     payload as the scene read route, so "you cannot
+                                                     address this scene" is never conflated with
+                                                     "this anchor is gone" and nothing leaks
 ```
 
 Contracts: `manuscript.query.target-span-resolution`. Transport note: the route is `POST` only because
