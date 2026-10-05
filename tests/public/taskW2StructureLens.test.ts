@@ -89,6 +89,17 @@ const novelResolution = {
 const idsOf = (rows: readonly any[]): string[] => rows.map((row) => row.objectId);
 const depthsOf = (rows: readonly any[]): number[] => rows.map((row) => row.depth);
 
+/** The node ids the rendered tree actually shows, in document order. */
+function nodeIds(html: string): string[] {
+  return [...html.matchAll(/data-structure-object-id="([^"]+)"/g)].map((match) => match[1]!);
+}
+
+/** The granularity phrase the focus bar shows, as it is rendered. */
+function zoomLabelText(html: string): string {
+  const match = html.match(/class="ws-zoom-label">([^<]*)</);
+  return match ? match[1]! : "";
+}
+
 function fakeTreeRoot() {
   const listeners: ((event: any) => void)[] = [];
   return {
@@ -452,5 +463,127 @@ describe("[task:W2] [integration] structure lens static hosting", () => {
     expect(stylesheet.body).toContain(".ws-tree");
 
     expect(calls).toEqual([]);
+  });
+});
+
+describe("[task:W2] [cross-system] the structure zoom control and the tree are one reading", () => {
+  it("changes the rendered tree granularity from a non-novel focus", async () => {
+    const model = await loadModule("focusModel.js");
+    const shell = await loadModule("shell.js");
+    const root = fakeShellRoot();
+    const view = fullView();
+
+    let state = model.createSessionState("novel-1");
+    state = model.initialiseLens(state, "structure");
+    state = model.navigate(state, { kind: "novel", id: "novel-1", mode: "explore" });
+    state = model.setZoom(state, "novel:novel-1", "arc");
+    state = model.navigate(state, { kind: "arc", id: "arc-1", mode: "design" });
+
+    // The defect only appears off the Novel focus: the tree and the control read
+    // different Focus keys, so the control changes the label but not the tree.
+    expect(model.currentFocus(state).kind).toBe("arc");
+
+    shell.renderShell(root, state, null, { view, error: "" });
+    const before = nodeIds(root.tree.innerHTML);
+    expect(before).toEqual(["arc-1", "chapter-1", "chapter-2", "arc-2"]);
+
+    const zoomed = shell.applyZoom(state, 1);
+
+    // Zoom is display state: it never moves the Focus or pushes the stack.
+    expect(model.currentFocus(zoomed).key).toBe("arc:arc-1");
+    expect(model.currentLens(zoomed)).toBe("structure");
+    expect(JSON.stringify(zoomed.focusStack)).toBe(JSON.stringify(state.focusStack));
+    expect(zoomed.pinned.length).toBe(state.pinned.length);
+
+    shell.renderShell(root, zoomed, null, { view, error: "" });
+    const after = nodeIds(root.tree.innerHTML);
+
+    expect(after).not.toEqual(before);
+    expect(after).toContain("scene-1");
+    expect(after.length).toBeGreaterThan(before.length);
+  });
+
+  it("shows the granularity the tree actually renders at", async () => {
+    const model = await loadModule("focusModel.js");
+    const shell = await loadModule("shell.js");
+    const lens = await loadModule("structureLens.js");
+    const root = fakeShellRoot();
+    const view = fullView();
+
+    const names: Record<string, string> = { novel: "小说", arc: "故事弧", chapter: "章节" };
+    const cases = [
+      { zoom: "novel", focus: { kind: "novel", id: "novel-1", mode: "explore" } },
+      { zoom: "arc", focus: { kind: "scene", id: "scene-1", mode: "write" } },
+      { zoom: "chapter", focus: { kind: "chapter", id: "chapter-1", mode: "design" } },
+    ];
+
+    for (const item of cases) {
+      let state = model.createSessionState("novel-1");
+      state = model.initialiseLens(state, "structure");
+      state = model.navigate(state, { kind: "novel", id: "novel-1", mode: "explore" });
+      state = model.setZoom(state, "novel:novel-1", item.zoom);
+      state = model.navigate(state, item.focus);
+
+      shell.renderShell(root, state, null, { view, error: "" });
+
+      const rendered = nodeIds(root.tree.innerHTML);
+      const matched = Object.keys(names).find(
+        (level) =>
+          JSON.stringify(
+            lens.visibleNodes(view, level, "").map((row: any) => row.objectId),
+          ) === JSON.stringify(rendered),
+      );
+
+      expect(matched).toBeDefined();
+      expect(zoomLabelText(root.region("focus-bar"))).toBe(`粒度：${names[matched!]}`);
+    }
+  });
+
+  it("shows an at-limit control instead of a silently inert one", async () => {
+    const model = await loadModule("focusModel.js");
+    const shell = await loadModule("shell.js");
+    const root = fakeShellRoot();
+    const view = fullView();
+
+    let state = model.createSessionState("novel-1");
+    state = model.initialiseLens(state, "structure");
+    state = model.navigate(state, { kind: "novel", id: "novel-1", mode: "explore" });
+    state = model.setZoom(state, "novel:novel-1", "chapter");
+
+    shell.renderShell(root, state, null, { view, error: "" });
+    const deepest = root.region("focus-bar");
+    expect(deepest).toMatch(/data-ws-action="zoom-in"[^>]*data-state="disabled"/);
+    expect(deepest).not.toMatch(/data-ws-action="zoom-out"[^>]*data-state="disabled"/);
+    expect(shell.applyZoom(state, 1)).toBe(state);
+
+    state = model.setZoom(state, "novel:novel-1", "novel");
+    shell.renderShell(root, state, null, { view, error: "" });
+    const shallowest = root.region("focus-bar");
+    expect(shallowest).toMatch(/data-ws-action="zoom-out"[^>]*data-state="disabled"/);
+    expect(shallowest).not.toMatch(/data-ws-action="zoom-in"[^>]*data-state="disabled"/);
+    expect(shell.applyZoom(state, -1)).toBe(state);
+  });
+
+  it("keeps the tree expanded when a node is selected", async () => {
+    const model = await loadModule("focusModel.js");
+    const shell = await loadModule("shell.js");
+    const root = fakeShellRoot();
+    const view = fullView();
+
+    let state = model.createSessionState("novel-1");
+    state = model.initialiseLens(state, "structure");
+    state = model.navigate(state, { kind: "novel", id: "novel-1", mode: "explore" });
+    state = model.setZoom(state, "novel:novel-1", "chapter");
+
+    shell.renderShell(root, state, null, { view, error: "" });
+    const expanded = nodeIds(root.tree.innerHTML);
+    expect(expanded).toContain("scene-1");
+
+    // Selecting a scene node navigates the Focus; the tree keeps its granularity.
+    state = model.navigate(state, { kind: "scene", id: "scene-1", mode: "write" });
+    shell.renderShell(root, state, null, { view, error: "" });
+
+    expect(model.currentFocus(state).key).toBe("scene:scene-1");
+    expect(nodeIds(root.tree.innerHTML)).toEqual(expanded);
   });
 });

@@ -8,7 +8,9 @@
  * Granularity (Ruling 2): the tree reuses the session semantic zoom of
  * focusModel.js. Zoom names the deepest granularity the tree expands to and is
  * pure display state: it never changes Focus, Lens, pinned context, or the
- * Focus Stack, and it never pushes the Focus Stack.
+ * Focus Stack, and it never pushes the Focus Stack. The tree can only tell
+ * Novel / Arc / Chapter apart, so granularities below Chapter clamp to it and
+ * `stepTreeZoom` reports a limit instead of a step that changes nothing.
  *
  * Honesty (Ruling 3): a degraded structure renders as degraded with its issues,
  * a dangling container entry appears only in the issues (the query already
@@ -139,6 +141,42 @@ export function zoomLevelFor(state, focusKey) {
   if (!state || typeof focusKey !== "string" || focusKey.length === 0) return "novel";
   const sessionLevel = zoomFor(state, focusKey);
   return SESSION_TO_LEVEL[sessionLevel] || "novel";
+}
+
+/**
+ * The granularities the browse tree can actually distinguish, shallowest first.
+ * The tree is Novel -> Arc -> Chapter -> Scene and has no node below a scene, so
+ * "scene" and "target-span" render exactly the same fully expanded tree as
+ * "chapter". They clamp to "chapter": the tree never pretends there is more to
+ * show than it can show.
+ */
+export const TREE_ZOOM_LEVELS = ["novel", "arc", "chapter"];
+
+const TREE_LEVEL_FOR_SESSION = {
+  novel: "novel",
+  arc: "arc",
+  chapter: "chapter",
+  // "span" is this module's name for the session "target-span"; both clamp.
+  span: "chapter",
+  "target-span": "chapter",
+};
+
+/** Clamps a semantic zoom level to the granularity the tree renders. */
+export function treeLevelFor(sessionLevel) {
+  return TREE_LEVEL_FOR_SESSION[sessionLevel] || TREE_ZOOM_LEVELS[0];
+}
+
+/**
+ * The tree granularity one step up (`direction > 0`) or down from `level`, or
+ * null when the tree is already as deep or as shallow as it renders. The zoom
+ * control uses null to show an at-limit state instead of staying silently inert.
+ */
+export function stepTreeZoom(level, direction) {
+  const index = TREE_ZOOM_LEVELS.indexOf(level);
+  const from = index < 0 ? 0 : index;
+  const next = from + (direction > 0 ? 1 : -1);
+  if (next < 0 || next >= TREE_ZOOM_LEVELS.length) return null;
+  return TREE_ZOOM_LEVELS[next];
 }
 
 function rowMarkup(entry) {

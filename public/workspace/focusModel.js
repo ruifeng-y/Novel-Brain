@@ -201,3 +201,28 @@ export function zoomFor(state, focusId) {
   const stored = state.zoomByFocus[focusId];
   return WORKSPACE_ZOOM_LEVELS.indexOf(stored) >= 0 ? stored : WORKSPACE_ZOOM_LEVELS[0];
 }
+
+/**
+ * The Focus key the session currently presents a zoom for: the nearest stored
+ * zoom along the Focus path. An object focused from a coarser granularity keeps
+ * the granularity it was opened from instead of collapsing the browse tree, so
+ * the Structure lens reads an object's effective zoom through this key.
+ *
+ * It is a read of the session. It never moves the Focus, never changes the
+ * Lens or the pinned context, and never touches the Focus Stack.
+ */
+export function effectiveZoomKey(state) {
+  const stack = state && Array.isArray(state.focusStack) ? state.focusStack : [];
+  const zoomByFocus = state && state.zoomByFocus ? state.zoomByFocus : {};
+
+  for (let index = stack.length - 1; index >= 0; index -= 1) {
+    const entry = stack[index];
+    const key = entry && typeof entry.key === "string" ? entry.key : "";
+    if (key.length > 0 && WORKSPACE_ZOOM_LEVELS.indexOf(zoomByFocus[key]) >= 0) {
+      return key;
+    }
+  }
+
+  const current = currentFocus(state);
+  return current && typeof current.key === "string" ? current.key : "";
+}

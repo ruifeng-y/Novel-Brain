@@ -5,6 +5,7 @@ import {
   createSessionState,
   currentFocus,
   currentLens,
+  effectiveZoomKey,
   focusToIndex,
   goBack,
   initialiseLens,
@@ -15,7 +16,7 @@ import {
   zoomFor,
 } from "./focusModel.js";
 import { createApiClient } from "./apiClient.js";
-import { renderStructureLens, zoomLevelFor } from "./structureLens.js";
+import { renderStructureLens, stepTreeZoom, treeLevelFor, zoomLevelFor } from "./structureLens.js";
 
 const STORAGE_KEYS = {
   novelId: "novel-brain.novel-id",
@@ -181,6 +182,41 @@ function zoomLabel(level) {
   return ZOOM_LABELS[level] || level;
 }
 
+/**
+ * The granularity the Structure browse tree renders at. The tree is rooted at
+ * the Novel and only distinguishes Novel / Arc / Chapter, so it follows the zoom
+ * the session presents for the Focus path and clamps granularities deeper than
+ * Chapter. The focus bar shows this same value while the Structure lens is
+ * active, so the tree and the label are one reading rather than two.
+ */
+function structureGranularity(session) {
+  return treeLevelFor(zoomLevelFor(session, effectiveZoomKey(session)));
+}
+
+/**
+ * The granularity the zoom control is showing, plus whether either direction can
+ * still change the tree. In the Structure lens the control steps the tree's own
+ * ladder; elsewhere it steps the per-Focus session zoom. At a limit the control
+ * shows an at-limit state instead of staying silently inert.
+ */
+function zoomControl(session, current) {
+  if (currentLens(session) === "structure") {
+    const level = structureGranularity(session);
+    return {
+      level: level,
+      canZoomOut: stepTreeZoom(level, -1) !== null,
+      canZoomIn: stepTreeZoom(level, 1) !== null,
+    };
+  }
+  const level = zoomFor(session, current.key);
+  const index = WORKSPACE_ZOOM_LEVELS.indexOf(level);
+  return {
+    level: level,
+    canZoomOut: index > 0,
+    canZoomIn: index < WORKSPACE_ZOOM_LEVELS.length - 1,
+  };
+}
+
 function stateBlock(stateName, label, detail) {
   const extra =
     detail === undefined || detail === ""
@@ -220,9 +256,9 @@ function renderLensRail(session) {
  * Chapter -> Scene tree; a lens whose browse tree is not built yet says so
  * instead of borrowing the structure tree.
  *
- * The granularity is the session semantic zoom of the Novel focus the rail
- * browses from, so navigating into the tree never collapses it: zoom is display
- * state, not navigation.
+ * The granularity is the session semantic zoom the Focus path presents, clamped
+ * to what the tree can render, so navigating into the tree never collapses it:
+ * zoom is display state, not navigation.
  */
 function renderStructureRegion(lensRail, session, structureView, structureFailure) {
   const treeRoot = childOf(lensRail, '[data-role="structure-tree"]');
@@ -233,7 +269,7 @@ function renderStructureRegion(lensRail, session, structureView, structureFailur
   }
   const focusKey = structureFocusKey(session);
   renderStructureLens(treeRoot, structureView, {
-    level: zoomLevelFor(session, focusKey),
+    level: structureGranularity(session),
     focusKey: focusKey,
     onSelect: selectStructureNode,
     error: structureFailure,
@@ -289,13 +325,20 @@ function renderFocusBar(session, current, view) {
 
   if (current) {
     const currentPinned = session.pinned.some(item => item.key === current.key);
+    const control = zoomControl(session, current);
     parts.push(
       `<div class="ws-zoom">` +
-        `<button type="button" class="ws-icon-button" data-ws-action="zoom-out" title="缩小粒度" aria-label="缩小粒度">−</button>` +
-        `<span class="ws-zoom-label">${escapeText(
-          `粒度：${zoomLabel(zoomFor(session, current.key))}`,
-        )}</span>` +
-        `<button type="button" class="ws-icon-button" data-ws-action="zoom-in" title="放大粒度" aria-label="放大粒度">+</button>` +
+        `<button type="button" class="ws-icon-button" data-ws-action="zoom-out" title="${
+          control.canZoomOut ? "缩小粒度" : "已到最小粒度"
+        }" aria-label="缩小粒度"${
+          control.canZoomOut ? "" : ' data-state="disabled" disabled'
+        }>−</button>` +
+        `<span class="ws-zoom-label">${escapeText(`粒度：${zoomLabel(control.level)}`)}</span>` +
+        `<button type="button" class="ws-icon-button" data-ws-action="zoom-in" title="${
+          control.canZoomIn ? "放大粒度" : "已到最大粒度"
+        }" aria-label="放大粒度"${
+          control.canZoomIn ? "" : ' data-state="disabled" disabled'
+        }>+</button>` +
         `</div>`,
     );
     parts.push(
@@ -337,7 +380,7 @@ function renderWhy(session, current, view) {
     `模式：${modeLabel(activeMode)}`,
     `镜头：${lensLabel(currentLens(session))}`,
     `默认镜头：${lensLabel(defaultLens)}`,
-    `粒度：${zoomLabel(zoomFor(session, current.key))}`,
+    `粒度：${zoomLabel(zoomControl(session, current).level)}`,
   ];
   return (
     `<div class="ws-why">` +
@@ -672,12 +715,33 @@ async function afterFocusChange(previousKey) {
   await resolveCurrentFocus();
 }
 
-function zoomBy(direction) {
-  const focus = currentFocus(state);
-  if (!focus) return;
-  const index = WORKSPACE_ZOOM_LEVELS.indexOf(zoomFor(state, focus.key));
+/**
+ * The zoom control's action, as a pure step of the session. In the Structure
+ * lens it steps the browse tree's granularity, which the tree and the focus bar
+ * both read; elsewhere it steps the per-Focus session zoom.
+ *
+ * It is display state only: it never changes the Focus, the Lens, or the pinned
+ * context, and it never pushes the Focus Stack. At a granularity limit the step
+ * is a no-op, so the control can show an at-limit state instead of a button that
+ * silently does nothing.
+ */
+export function applyZoom(sessionState, direction) {
+  const focus = currentFocus(sessionState);
+  if (!focus) return sessionState;
+
+  if (currentLens(sessionState) === "structure") {
+    const next = stepTreeZoom(structureGranularity(sessionState), direction);
+    if (next === null) return sessionState;
+    return setZoom(sessionState, focus.key, next);
+  }
+
+  const index = WORKSPACE_ZOOM_LEVELS.indexOf(zoomFor(sessionState, focus.key));
   const next = Math.max(0, Math.min(WORKSPACE_ZOOM_LEVELS.length - 1, index + direction));
-  state = setZoom(state, focus.key, WORKSPACE_ZOOM_LEVELS[next]);
+  return setZoom(sessionState, focus.key, WORKSPACE_ZOOM_LEVELS[next]);
+}
+
+function zoomBy(direction) {
+  state = applyZoom(state, direction);
   render();
 }
 
