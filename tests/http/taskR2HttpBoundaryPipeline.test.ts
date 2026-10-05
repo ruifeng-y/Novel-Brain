@@ -138,6 +138,68 @@ describe("[task:R2] [integration] HTTP validation and replay", () => {
     expect(second).toEqual(first);
   });
 
+  it("replays one idempotencyKey across different requestIds without duplicate execution", async () => {
+    const { pipeline } = fixtures();
+    let executions = 0;
+    const input = { command: "generate", idempotencyKey: "stable-client-key" };
+    const retriedContext = {
+      ...context,
+      requestId: "request-2",
+      correlation: {
+        ...context.correlation,
+        requestId: "request-2",
+      },
+    };
+
+    const first = await pipeline.execute("api.command", context, input, async value => {
+      executions += 1;
+      return { value, execution: executions };
+    });
+    const second = await pipeline.execute(
+      "api.command",
+      retriedContext,
+      input,
+      async value => {
+        executions += 1;
+        return { value, execution: executions };
+      },
+    );
+
+    expect(executions).toBe(1);
+    expect(second).toEqual(first);
+  });
+
+  it("rejects reuse of one idempotencyKey for a different payload", async () => {
+    const { pipeline } = fixtures();
+    let executions = 0;
+
+    await pipeline.execute(
+      "api.command",
+      context,
+      { command: "generate", idempotencyKey: "conflicting-client-key", payload: "first" },
+      async value => {
+        executions += 1;
+        return value;
+      },
+    );
+
+    await expect(
+      pipeline.execute(
+        "api.command",
+        {
+          ...context,
+          requestId: "request-conflict",
+          correlation: { ...context.correlation, requestId: "request-conflict" },
+        },
+        { command: "generate", idempotencyKey: "conflicting-client-key", payload: "second" },
+        async value => {
+          executions += 1;
+          return value;
+        },
+      ),
+    ).rejects.toThrow("already reserved for a different request");
+    expect(executions).toBe(1);
+  });
   it("rejects invalid request payloads before invoking the handler", async () => {
     const { pipeline } = fixtures();
     const invalid = createHttpBoundaryPipeline({

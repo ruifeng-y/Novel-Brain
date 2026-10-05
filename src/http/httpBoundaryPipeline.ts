@@ -45,6 +45,23 @@ function isAuditSubjectKind(value: string): value is AuditSubjectKind {
   return auditSubjectKinds.has(value as AuditSubjectKind);
 }
 
+function suppliedIdempotencyKey(input: unknown): string | undefined {
+  if (typeof input !== "object" || input === null) return undefined;
+  const value = (input as { idempotencyKey?: unknown }).idempotencyKey;
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized.length === 0 ? undefined : normalized;
+}
+
+function httpIdempotencyKey(
+  contractId: string,
+  context: HttpBoundaryContext,
+  input: unknown,
+): string {
+  const requestKey = suppliedIdempotencyKey(input) ?? context.requestId;
+  return `${contractId}\u0000${context.principal.workspaceId}\u0000${requestKey}`;
+}
+
 export function createHttpBoundaryPipeline(
   options: HttpBoundaryPipelineOptions,
 ): HttpBoundaryPipeline {
@@ -82,7 +99,7 @@ export function createHttpBoundaryPipeline(
         contract.idempotency === "not-applicable"
           ? { value: await execute(), replayed: false }
           : await idempotency.run(
-              `${contract.id}:${context.requestId}`,
+              httpIdempotencyKey(contract.id, context, input),
               execute,
               hashContent(canonicalJson({ contractId: contract.id, input })),
             );
