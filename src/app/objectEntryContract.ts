@@ -25,7 +25,9 @@ export type WorkspaceObjectKind =
   | "analysis"
   | "process";
 
-export type WorkspaceMode = "explore" | "design" | "write" | "review" | "analyze";
+export const workspaceModes = ["explore", "design", "write", "review", "analyze"] as const;
+
+export type WorkspaceMode = (typeof workspaceModes)[number];
 
 export type WorkspaceLens = "structure" | "semantic" | "temporal" | "thread" | "impact" | "process";
 

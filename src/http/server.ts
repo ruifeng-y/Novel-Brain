@@ -29,6 +29,26 @@ const staticAssets: readonly {
   { route: "/index.html", file: "index.html", contentType: "text/html; charset=utf-8" },
   { route: "/styles.css", file: "styles.css", contentType: "text/css; charset=utf-8" },
   { route: "/app.js", file: "app.js", contentType: "text/javascript; charset=utf-8" },
+  {
+    route: "/workspace/workspace.css",
+    file: "workspace/workspace.css",
+    contentType: "text/css; charset=utf-8",
+  },
+  {
+    route: "/workspace/shell.js",
+    file: "workspace/shell.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
+  {
+    route: "/workspace/focusModel.js",
+    file: "workspace/focusModel.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
+  {
+    route: "/workspace/apiClient.js",
+    file: "workspace/apiClient.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
 ];
 
 export function createNovelBrainServer(

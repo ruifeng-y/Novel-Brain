@@ -5,9 +5,36 @@
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>小说大脑工作区</title>
     <link rel="stylesheet" href="/styles.css" />
+    <link rel="stylesheet" href="/workspace/workspace.css" />
   </head>
   <body>
-    <div class="app-shell">
+    <div id="workspace-shell" data-role="workspace-shell">
+      <header class="ws-identity-bar" data-region="identity-bar">
+        <div class="context-field">
+          <label for="ws-novel-id">小说</label>
+          <input id="ws-novel-id" name="wsNovelId" type="text" autocomplete="off" spellcheck="false" />
+        </div>
+        <div class="context-field">
+          <label for="ws-author-id">作者</label>
+          <input id="ws-author-id" name="wsAuthorId" type="text" autocomplete="off" spellcheck="false" />
+        </div>
+        <button type="button" class="ws-button" data-ws-action="apply-identity" title="应用工作区身份">
+          应用
+        </button>
+        <button type="button" class="ws-button" data-ws-action="show-legacy" title="打开旧版视图">
+          旧版视图
+        </button>
+        <span class="ws-state" data-role="ws-identity-status" data-state="disabled" role="status"></span>
+      </header>
+
+      <nav class="ws-rail" data-region="lens-rail" aria-label="镜头"></nav>
+      <div class="ws-focus-bar" data-region="focus-bar"></div>
+      <main class="ws-working-surface" data-region="working-surface"></main>
+      <aside class="ws-context-panels" data-region="context-panels" aria-label="上下文面板"></aside>
+      <div class="ws-attention-layer" data-region="attention-layer" aria-label="关注"></div>
+    </div>
+
+    <div class="app-shell" hidden>
       <header class="context-bar" data-context="workspace-identity">
         <div class="context-field">
           <label for="novel-id">小说</label>
@@ -42,6 +69,14 @@
             <path d="M13 8a5 5 0 1 1-1.6-3.7" fill="none" stroke="currentColor" stroke-width="1.5" />
             <path d="M13 2.5V5.5H10" fill="none" stroke="currentColor" stroke-width="1.5" />
           </svg>
+        </button>
+        <button
+          type="button"
+          class="button"
+          data-ws-action="show-workspace"
+          title="返回工作区"
+        >
+          工作区
         </button>
         <span class="context-status" data-role="context-status" data-state="idle" role="status"></span>
       </header>
@@ -144,5 +179,6 @@
       </div>
     </div>
     <script src="/app.js"></script>
+    <script type="module" src="/workspace/shell.js"></script>
   </body>
 </html>

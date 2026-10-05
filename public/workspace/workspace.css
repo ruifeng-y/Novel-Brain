@@ -1,0 +1,301 @@
+/*
+ * Workspace shell presentation.
+ *
+ * Layout only: the shell frame is stable while the working surface follows the
+ * Focus. Regions narrow in the order the Spec defines: the surface keeps its
+ * space longest, then the context panels, then the lens rail.
+ */
+
+#workspace-shell {
+  display: grid;
+  gap: 12px;
+  grid-template-columns: 148px minmax(0, 1fr) 260px;
+  grid-template-areas:
+    "identity identity identity"
+    "lens focus focus"
+    "lens surface panels"
+    "attention attention attention";
+  padding: 12px;
+  min-height: 100vh;
+  box-sizing: border-box;
+  letter-spacing: 0;
+}
+
+/* `hidden` must win over the shell's own display rule. */
+#workspace-shell[hidden],
+.app-shell[hidden] {
+  display: none;
+}
+
+#workspace-shell [data-region="identity-bar"] {
+  grid-area: identity;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--line, #d7d2c8);
+  border-radius: 8px;
+  background: var(--panel, #fdfcf8);
+}
+
+#workspace-shell [data-region="lens-rail"] {
+  grid-area: lens;
+  border: 1px solid var(--line, #d7d2c8);
+  border-radius: 8px;
+  background: var(--panel, #fdfcf8);
+  padding: 8px;
+}
+
+#workspace-shell [data-region="focus-bar"] {
+  grid-area: focus;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: center;
+  padding: 8px 10px;
+  border: 1px solid var(--line, #d7d2c8);
+  border-radius: 8px;
+  background: var(--panel, #fdfcf8);
+}
+
+#workspace-shell [data-region="working-surface"] {
+  grid-area: surface;
+  min-width: 0;
+  border: 1px solid var(--line, #d7d2c8);
+  border-radius: 8px;
+  background: var(--surface, #ffffff);
+  padding: 14px;
+}
+
+#workspace-shell [data-region="context-panels"] {
+  grid-area: panels;
+  min-width: 0;
+  border: 1px solid var(--line, #d7d2c8);
+  border-radius: 8px;
+  background: var(--panel, #fdfcf8);
+  padding: 10px;
+}
+
+#workspace-shell [data-region="attention-layer"] {
+  grid-area: attention;
+  border: 1px dashed var(--line, #d7d2c8);
+  border-radius: 8px;
+  background: var(--panel, #fdfcf8);
+  padding: 8px 10px;
+}
+
+.ws-region-title {
+  margin: 0 0 8px;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--ink-muted, #6b6357);
+}
+
+.ws-lens-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ws-lens,
+.ws-button,
+.ws-icon-button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: 1px solid var(--line, #d7d2c8);
+  border-radius: 6px;
+  background: var(--surface, #ffffff);
+}
+
+.ws-lens {
+  width: 100%;
+  padding: 6px 8px;
+  text-align: left;
+}
+
+.ws-lens[aria-pressed="true"] {
+  border-color: var(--accent, #6b5a3e);
+  background: var(--accent-soft, #f1e9d8);
+  font-weight: 600;
+}
+
+.ws-button {
+  padding: 5px 10px;
+}
+
+.ws-icon-button {
+  width: 30px;
+  height: 30px;
+  padding: 0;
+  line-height: 1;
+}
+
+.ws-icon-button[data-state="disabled"],
+.ws-button[data-state="disabled"] {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+
+.ws-path {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  align-items: center;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ws-crumb {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  padding: 3px 6px;
+}
+
+.ws-crumb:hover {
+  border-color: var(--line, #d7d2c8);
+}
+
+.ws-pinned {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.ws-pin,
+.ws-chip {
+  display: inline-block;
+  padding: 2px 7px;
+  border: 1px solid var(--line, #d7d2c8);
+  border-radius: 6px;
+  background: var(--surface, #ffffff);
+  font-size: 12px;
+  line-height: 18px;
+  white-space: nowrap;
+}
+
+.ws-zoom {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.ws-zoom-label {
+  font-size: 12px;
+  min-width: 72px;
+  text-align: center;
+}
+
+.ws-jump select {
+  font: inherit;
+  padding: 5px 8px;
+  border: 1px solid var(--line, #d7d2c8);
+  border-radius: 6px;
+  background: var(--surface, #ffffff);
+}
+
+.ws-surface-head {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  align-items: baseline;
+  justify-content: space-between;
+  margin-bottom: 10px;
+}
+
+.ws-surface-head h2 {
+  margin: 0;
+  font-size: 18px;
+}
+
+.ws-facts,
+.ws-why {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  align-items: center;
+  flex-basis: 100%;
+}
+
+.ws-state {
+  display: flex;
+  gap: 8px;
+  align-items: center;
+  padding: 10px;
+  border: 1px dashed var(--line, #d7d2c8);
+  border-radius: 8px;
+  font-size: 13px;
+  color: var(--ink-muted, #6b6357);
+}
+
+.ws-state[data-state="error"] {
+  border-color: var(--danger, #a5442f);
+  color: var(--danger, #a5442f);
+}
+
+.ws-state-detail {
+  color: inherit;
+}
+
+.ws-panel-list {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ws-panel h3 {
+  margin: 0 0 6px;
+  font-size: 13px;
+}
+
+.ws-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (max-width: 1100px) {
+  #workspace-shell {
+    grid-template-columns: 72px minmax(0, 1fr);
+    grid-template-areas:
+      "identity identity"
+      "lens focus"
+      "lens surface"
+      "attention attention"
+      "panels panels";
+  }
+
+  #workspace-shell [data-region="lens-rail"] .ws-lens {
+    text-align: center;
+    padding: 6px 2px;
+    font-size: 12px;
+  }
+}
+
+@media (max-width: 720px) {
+  #workspace-shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas:
+      "identity"
+      "focus"
+      "surface"
+      "panels"
+      "lens"
+      "attention";
+  }
+}

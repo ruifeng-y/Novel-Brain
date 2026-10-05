@@ -8,6 +8,12 @@ import {
   type ProductSurface,
 } from "../app/productSurfaceCommandService";
 import { createWorkspaceProductQueryService } from "../app/workspaceProductQueryService";
+import {
+  getObjectEntryContract,
+  isWorkspaceObjectKind,
+  workspaceModes,
+} from "../app/objectEntryContract";
+import { resolveFocus } from "../app/focusResolution";
 import { createStructuralNavigationQuery } from "../app/structuralNavigationQuery";
 import { createStructureCommandService } from "../app/structureCommandService";
 import type { FoundationWorkspaceFocus } from "../story/application/foundationWorkspaceContract";
@@ -239,6 +245,7 @@ const routeContracts = {
   commitChangeSetRevision: "commit.command.commit-change-set-revision",
   listNovelEvents: "commit.query.commit-evidence",
   workspaceFocus: "foundation.query.workspace-focus",
+  focusResolution: "workspace.query.focus-resolution",
   enterFoundationIdea: "foundation.command.enter-foundation-idea",
   extractFoundationText: "foundation.command.extract-foundation-text",
   createBlankFoundation: "foundation.command.create-blank-foundation",
@@ -302,6 +309,13 @@ function requiredPathParameter(request: FastifyRequest, name: string): string {
   const params = request.params as Record<string, unknown> | undefined;
   return z.string().min(1).parse(params?.[name]);
 }
+
+function requiredQueryParameter(request: FastifyRequest, name: string): string {
+  const query = request.query as Record<string, unknown> | undefined;
+  return z.string().min(1).parse(query?.[name]);
+}
+
+const workspaceModeSchema = z.enum(workspaceModes);
 
 function normalizeTransportValue(value: unknown): unknown {
   if (value === undefined) return null;
@@ -611,6 +625,50 @@ export function registerNovelBrainRoutes(
       async () => {
         const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
         return dependencies.eventStore.listByNovel(params.novelId);
+      },
+    );
+  });
+
+  /**
+   * Focus resolution policy lives on the server: the client names the object
+   * kind it wants to work on and renders the answer, so there is exactly one
+   * source for the default Mode, surface, panels, and Lens. The authorization
+   * resource is the workspace named by the request itself, never a placeholder
+   * and never the consistency header.
+   */
+  app.get("/workspace/resolution", async (request, reply) => {
+    const workspaceId = requiredQueryParameter(request, "workspaceId");
+    const kind = requiredQueryParameter(request, "kind");
+    if (!isWorkspaceObjectKind(kind)) {
+      return reply.code(400).send({
+        error: "Bad Request",
+        message: `unknown workspace object kind: ${kind}`,
+      });
+    }
+    const rawMode = (request.query as Record<string, unknown> | undefined)?.mode;
+    const requestedMode = rawMode === undefined ? undefined : workspaceModeSchema.parse(rawMode);
+    return pipeline.execute(
+      routeContracts.focusResolution,
+      routeBoundaryContext(request, workspaceId),
+      routeBoundaryInput(request),
+      async () => {
+        const resolution = resolveFocus({
+          kind,
+          ...(requestedMode === undefined ? {} : { requestedMode }),
+        });
+        if (!resolution.resolved) {
+          return reply.code(400).send({ error: "Bad Request", message: resolution.reason });
+        }
+        const entry = getObjectEntryContract(resolution.kind);
+        return reply.code(200).send({
+          workspaceId,
+          resolved: true,
+          kind: resolution.kind,
+          mode: resolution.mode,
+          surfaceKind: entry.surfaceKind,
+          defaultPanels: entry.defaultPanels,
+          defaultLens: entry.defaultLens,
+        });
       },
     );
   });

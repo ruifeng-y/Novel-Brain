@@ -7,6 +7,7 @@ export const applicationCapabilities = [
   "recall",
   "foundation",
   "manuscript",
+  "workspace",
 ] as const;
 
 export type ApplicationCapability = (typeof applicationCapabilities)[number];
@@ -363,6 +364,19 @@ export const applicationCapabilityBoundaries = {
       {
         id: "manuscript.query.structural-navigation",
         capability: "manuscript",
+        kind: "query",
+        effect: "read",
+        resultChannel: "query-result",
+      },
+    ],
+  },
+  workspace: {
+    capability: "workspace",
+    commands: [],
+    queries: [
+      {
+        id: "workspace.query.focus-resolution",
+        capability: "workspace",
         kind: "query",
         effect: "read",
         resultChannel: "query-result",

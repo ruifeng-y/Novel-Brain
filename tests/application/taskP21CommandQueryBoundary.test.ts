@@ -83,6 +83,10 @@ const expectedOperationIds = {
     ],
     queries: ["manuscript.query.structural-navigation"],
   },
+  workspace: {
+    commands: [],
+    queries: ["workspace.query.focus-resolution"],
+  },
 } as const;
 
 function resolveImport(importer: string, specifier: string): string {
@@ -133,6 +137,7 @@ describe("[task:P2.1] command and query boundary contracts", () => {
       "recall",
       "foundation",
       "manuscript",
+      "workspace",
     ]);
 
     const actualOperationIds = Object.fromEntries(
