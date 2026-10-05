@@ -283,7 +283,7 @@ export const verificationTaskProfiles = {
   "R7-R9": {
     id: "R7-R9",
     label: "[task:R7-R9]",
-    evidenceLabels: ["[task:R8]", "[task:R9]"],
+    evidenceLabels: ["[task:R7]", "[task:R8]", "[task:R9]"],
     requiredGates: [
       "domain",
       "integration",

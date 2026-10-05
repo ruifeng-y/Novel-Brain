@@ -40,7 +40,7 @@ describe("[task:R8] [regression] run creation release registration", () => {
     expect(getVerificationTaskProfile("R7-R9")).toEqual({
       id: "R7-R9",
       label: "[task:R7-R9]",
-      evidenceLabels: ["[task:R8]", "[task:R9]"],
+      evidenceLabels: ["[task:R7]", "[task:R8]", "[task:R9]"],
       requiredGates: ["domain", "integration", "cross-system", "regression"],
     });
     expect(() => parseVerificationCli(["system", "--task", "R7-R9"])).not.toThrow();

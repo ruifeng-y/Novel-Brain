@@ -3,11 +3,16 @@ import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { PrismaClient } from "@prisma/client";
 import { createPrismaEngineServer } from "../src/app/prismaComposition.ts";
+import type { HttpBoundaryPipeline } from "../src/http/httpBoundaryPipeline.ts";
 import {
   createProductionProcessBootstrap,
   type ProductionProcessBootstrap,
 } from "../src/platform/productionProcessBootstrap.ts";
 import type { ProductionConfiguration } from "../src/platform/productionConfiguration.ts";
+import {
+  createProductionHttpBoundaryPipeline,
+  type ProductionSecurityEnvironment,
+} from "../src/platform/productionSecurityProvider.ts";
 import type {
   DeploymentHealthProbe,
   DeploymentHealthStatus,
@@ -34,6 +39,7 @@ type PrismaEngineServer = ReturnType<typeof createPrismaEngineServer>;
 function createApplicationProcessController(
   role: DeploymentProcessRole,
   configuration: ProductionConfiguration,
+  httpBoundaryPipeline: HttpBoundaryPipeline,
 ): RoleProcessController {
   let server: PrismaEngineServer | undefined;
   let prisma: PrismaClient | undefined;
@@ -43,7 +49,7 @@ function createApplicationProcessController(
       if (process !== role) return;
       if (server !== undefined) throw new Error("application process is already running");
       const client = new PrismaClient();
-      const created = createPrismaEngineServer(client);
+      const created = createPrismaEngineServer(client, { httpBoundaryPipeline });
       try {
         await created.listen({ port: configuration.applicationPort, host: "0.0.0.0" });
       } catch (error) {
@@ -183,15 +189,23 @@ function createPrismaMigrationOperation(): DeploymentMigrationOperation {
 /**
  * Builds the deployment bootstrap for a single process role. Migrations run
  * before the role process starts, and health is derived from the real process
- * state rather than static values.
+ * state rather than static values. The application role always serves through
+ * the production security boundary pipeline built from the environment, so a
+ * deployment without security configuration fails at startup and never falls
+ * back to the development pipeline.
  */
 export function createDeploymentProcessBootstrap(
   role: DeploymentProcessRole,
   configuration: ProductionConfiguration,
+  env: ProductionSecurityEnvironment = process.env,
 ): ProductionProcessBootstrap {
   const roleController =
     role === "application"
-      ? createApplicationProcessController(role, configuration)
+      ? createApplicationProcessController(
+          role,
+          configuration,
+          createProductionHttpBoundaryPipeline(configuration, env),
+        )
       : createWorkerProcessController(role, configuration);
   const processes: DeploymentProcessController = {
     start: async process => {

@@ -1,5 +1,5 @@
 import type { PrismaClient } from "@prisma/client";
-import { createNovelBrainServer } from "../http/server";
+import { createNovelBrainServer, type NovelBrainServerOptions } from "../http/server";
 import type { ApiDependencies } from "../http/routes";
 import { capabilityPersistencePayloadCodec } from "../shared/domain/persistencePayload";
 import {
@@ -104,6 +104,9 @@ export function createPrismaEngineDependencies(prisma: PrismaClient): ApiDepende
   };
 }
 
-export function createPrismaEngineServer(prisma: PrismaClient) {
-  return createNovelBrainServer(createPrismaEngineDependencies(prisma));
+export function createPrismaEngineServer(
+  prisma: PrismaClient,
+  options: NovelBrainServerOptions = {},
+) {
+  return createNovelBrainServer(createPrismaEngineDependencies(prisma), options);
 }
