@@ -24,6 +24,7 @@ export const verificationGates: readonly VerificationGate[] = [
 export interface VerificationTaskProfile {
   readonly id: string;
   readonly label: string;
+  readonly evidenceLabels?: readonly string[];
   readonly requiredGates: readonly VerificationGate[];
 }
 
@@ -200,6 +201,17 @@ export const verificationTaskProfiles = {
   "P4.1": {
     id: "P4.1",
     label: "[task:P4.1]",
+    requiredGates: [
+      "domain",
+      "integration",
+      "cross-system",
+      "regression",
+    ],
+  },
+  "P4.2-P4.3": {
+    id: "P4.2-P4.3",
+    label: "[task:P4.2-P4.3]",
+    evidenceLabels: ["[task:P4.2]", "[task:P4.3]"],
     requiredGates: [
       "domain",
       "integration",

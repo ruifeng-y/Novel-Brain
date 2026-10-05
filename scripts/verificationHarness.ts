@@ -318,7 +318,8 @@ export function collectTaskGateEvidence(
   profile: VerificationTaskProfile,
   gate: VerificationGate,
 ): TaskGateEvidence {
-  const taskLabel = profile.label.toLowerCase();
+  const taskLabels = [profile.label, ...(profile.evidenceLabels ?? [])]
+    .map(label => label.toLowerCase());
   const gateLabel = `[${gate}]`;
   let evidence: TaskGateEvidence = { passed: 0, failed: 0, todo: 0, skipped: 0 };
 
@@ -327,7 +328,9 @@ export function collectTaskGateEvidence(
     for (const result of report.testResults) {
       for (const assertion of result.assertionResults) {
         const fullName = assertion.fullName.toLowerCase();
-        if (!fullName.includes(taskLabel) || !fullName.includes(gateLabel)) continue;
+        if (!taskLabels.some(taskLabel => fullName.includes(taskLabel)) || !fullName.includes(gateLabel)) {
+          continue;
+        }
         if (assertion.status === "passed") {
           evidence = { ...evidence, passed: evidence.passed + 1 };
         } else if (assertion.status === "failed") {
