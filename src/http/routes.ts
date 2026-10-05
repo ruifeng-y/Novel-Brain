@@ -49,6 +49,7 @@ import {
   type ApprovalScope,
   type ReviewDecision,
 } from "../production/domain/reviewDecision";
+import { approveRunPlanRevision } from "../production/domain/runPlan";
 import type { CanonicalFact } from "../narrative/canon/domain/canonicalFact";
 import type { StateRecord } from "../narrative/state/domain/stateRecord";
 import type { NarrativeCommit } from "../safety/domain/narrativeCommit";
@@ -64,6 +65,7 @@ import {
   type CommitChangeSetRevisionApprovalRequirement,
   type CommitChangeSetRevisionTransaction,
 } from "../safety/application/commitChangeSetRevision";
+import { rejectionPayload, rejectionStatus } from "./rejectionStatus";
 
 export interface ApiDependencies {
   readonly novels: Repository<Novel>;
@@ -307,6 +309,10 @@ export function registerNovelBrainRoutes(
         conflictType: error.conflictType,
         reason: error.message,
       });
+    }
+    const status = rejectionStatus(error);
+    if (status !== undefined) {
+      return reply.code(status).send(rejectionPayload(error, status));
     }
     return reply.send(error);
   });
@@ -753,8 +759,12 @@ export function registerNovelBrainRoutes(
       routeBoundaryContext(request),
       routeBoundaryInput(request),
       async () => {
-        if (!productSurface) return productSurfaceUnavailable(reply);
+        if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
         const body = runPlanApprovalRequestSchema.parse(request.body);
+        const revision = await productDependencies.runPersistence.planRevisions.findById(
+          params.planRevisionId,
+        );
+        if (!revision) return reply.code(404).send({ error: "Run Plan Revision not found" });
         const approval = await productSurface.approveRunPlan({
           approvalId: body.approvalId,
           planRevisionId: params.planRevisionId,
@@ -779,6 +789,13 @@ export function registerNovelBrainRoutes(
           body.runPlanRevisionId,
         );
         if (!revision) return reply.code(404).send({ error: "Run Plan Revision not found" });
+        const approval = await productDependencies.runPersistence.planApprovals.findByRevisionId(
+          revision.id,
+          revision.novelId,
+        );
+        if (!approval || !approveRunPlanRevision(approval, revision)) {
+          return reply.code(409).send({ error: "Run Plan Revision is not approved" });
+        }
         const view = await productSurface.startRun({
           id: body.id,
           novelId: body.novelId,
@@ -796,8 +813,10 @@ export function registerNovelBrainRoutes(
       routeBoundaryContext(request),
       routeBoundaryInput(request),
       async () => {
-        if (!productSurface) return productSurfaceUnavailable(reply);
+        if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
         const params = z.object({ runId: z.string().min(1) }).parse(request.params);
+        const run = await productDependencies.runPersistence.runs.findById(params.runId);
+        if (!run) return reply.code(404).send({ error: "Production Run not found" });
         const body = runTransitionRequestSchema.parse(request.body ?? {});
         const view = await productSurface.pauseRun({
           runId: params.runId,
@@ -815,8 +834,10 @@ export function registerNovelBrainRoutes(
       routeBoundaryContext(request),
       routeBoundaryInput(request),
       async () => {
-        if (!productSurface) return productSurfaceUnavailable(reply);
+        if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
         const params = z.object({ runId: z.string().min(1) }).parse(request.params);
+        const run = await productDependencies.runPersistence.runs.findById(params.runId);
+        if (!run) return reply.code(404).send({ error: "Production Run not found" });
         const body = runTransitionRequestSchema.parse(request.body ?? {});
         const view = await productSurface.resumeRun({
           runId: params.runId,
@@ -833,8 +854,10 @@ export function registerNovelBrainRoutes(
       routeBoundaryContext(request),
       routeBoundaryInput(request),
       async () => {
-        if (!productSurface) return productSurfaceUnavailable(reply);
+        if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
         const params = z.object({ runId: z.string().min(1) }).parse(request.params);
+        const run = await productDependencies.runPersistence.runs.findById(params.runId);
+        if (!run) return reply.code(404).send({ error: "Production Run not found" });
         const view = await productSurface.getRunStatus({ runId: params.runId });
         return reply.code(200).send(view);
       },
