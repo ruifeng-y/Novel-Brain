@@ -294,7 +294,7 @@ describe("[task:Hardening-A] [integration] create Novel under the real workspace
     expect(response.json().authorId).toBe(productionAuthor);
   });
 
-  it("rejects the create when x-workspace-id is absent", async () => {
+  it("authorizes the create from the derived novel id when x-workspace-id is absent", async () => {
     const { app } = secureHarness();
 
     const response = await app.inject({
@@ -304,22 +304,35 @@ describe("[task:Hardening-A] [integration] create Novel under the real workspace
       payload: { id: scopedWorkspaceId, authorId: productionAuthor, title: "作用域小说" },
     });
 
-    expect(response.statusCode).not.toBe(201);
-    expect(response.statusCode).toBeGreaterThanOrEqual(400);
-    expect(response.json().message).toContain("is not scoped to workspace");
+    expect(response.statusCode).toBe(201);
+    expect(response.json().id).toBe(scopedWorkspaceId);
   });
 
-  it("rejects the create when x-workspace-id falls outside the principal scope", async () => {
+  it("rejects the create when the derived novel id falls outside the principal scope", async () => {
     const { app } = secureHarness();
 
     const response = await app.inject({
       method: "POST",
       url: "/novels",
-      headers: { "x-author-id": productionAuthor, "x-workspace-id": "someone-else" },
+      headers: { "x-author-id": productionAuthor },
       payload: { id: "someone-else", authorId: productionAuthor, title: "作用域小说" },
     });
 
-    expect(response.statusCode).not.toBe(201);
+    expect(response.statusCode).toBe(403);
     expect(response.json().message).toContain("is not scoped to workspace someone-else");
+  });
+
+  it("rejects the create when the scoped header disagrees with the addressed novel", async () => {
+    const { app } = secureHarness();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/novels",
+      headers: { "x-author-id": productionAuthor, "x-workspace-id": scopedWorkspaceId },
+      payload: { id: "someone-else", authorId: productionAuthor, title: "外部小说" },
+    });
+
+    expect(response.statusCode).toBe(403);
+    expect(response.json().message).toContain("does not match the addressed workspace");
   });
 });

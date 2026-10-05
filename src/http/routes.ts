@@ -66,6 +66,7 @@ import {
   type CommitChangeSetRevisionTransaction,
 } from "../safety/application/commitChangeSetRevision";
 import { rejectionPayload, rejectionStatus } from "./rejectionStatus";
+import { ResourceIsolationError } from "../platform/securityBoundary";
 
 export interface ApiDependencies {
   readonly novels: Repository<Novel>;
@@ -254,18 +255,24 @@ function headerValue(request: FastifyRequest, name: string): string | undefined 
   return trimmed.length === 0 ? undefined : trimmed;
 }
 
-function routeWorkspaceId(request: FastifyRequest): string {
+/**
+ * The boundary authorizes the identity the handler actually acts on, so each
+ * route derives its workspace from the addressed entity (path parameter, body
+ * or a pre-loaded aggregate). The client-supplied `x-workspace-id` is never an
+ * authorization source; it is only a consistency assertion: a mismatching
+ * value is rejected, an absent value is ignored.
+ */
+function assertWorkspaceHeader(request: FastifyRequest, derivedWorkspaceId: string): void {
   const header = headerValue(request, "x-workspace-id");
-  if (header !== undefined) return header;
-  const params = request.params as { novelId?: unknown } | undefined;
-  if (params && typeof params.novelId === "string" && params.novelId.length > 0) {
-    return params.novelId;
+  if (header !== undefined && header !== derivedWorkspaceId) {
+    throw new ResourceIsolationError(
+      `x-workspace-id ${header} does not match the addressed workspace ${derivedWorkspaceId}`,
+    );
   }
-  return "default-workspace";
 }
 
-function routeBoundaryContext(request: FastifyRequest): HttpBoundaryContext {
-  const workspaceId = routeWorkspaceId(request);
+function routeBoundaryContext(request: FastifyRequest, workspaceId: string): HttpBoundaryContext {
+  assertWorkspaceHeader(request, workspaceId);
   const requestId = headerValue(request, "x-request-id") ?? crypto.randomUUID();
   return {
     requestId,
@@ -276,6 +283,14 @@ function routeBoundaryContext(request: FastifyRequest): HttpBoundaryContext {
     resource: { kind: "workspace", id: workspaceId },
     correlation: { requestId, traceId: requestId, auditId: requestId },
   };
+}
+
+/** Identity of the Novel a body-addressed create route acts on (`POST /novels` carries `id`). */
+const novelBodyIdentitySchema = z.object({ id: z.string().min(1) });
+
+function requiredPathParameter(request: FastifyRequest, name: string): string {
+  const params = request.params as Record<string, unknown> | undefined;
+  return z.string().min(1).parse(params?.[name]);
 }
 
 function normalizeTransportValue(value: unknown): unknown {
@@ -329,10 +344,11 @@ export function registerNovelBrainRoutes(
       ? undefined
       : createProductSurfaceCommandService(productDependencies);
 
-  app.post("/novels", async (request, reply) =>
-    pipeline.execute(
+  app.post("/novels", async (request, reply) => {
+    const identity = novelBodyIdentitySchema.parse(request.body);
+    return pipeline.execute(
       routeContracts.createNovel,
-      routeBoundaryContext(request),
+      routeBoundaryContext(request, identity.id),
       routeBoundaryInput(request),
       async () => {
         const body = z
@@ -342,13 +358,14 @@ export function registerNovelBrainRoutes(
         await dependencies.novels.save(novel);
         return reply.code(201).send(novel);
       },
-    ),
-  );
+    );
+  });
 
-  app.post("/novels/:novelId/scenes", async (request, reply) =>
-    pipeline.execute(
+  app.post("/novels/:novelId/scenes", async (request, reply) => {
+    const novelId = requiredPathParameter(request, "novelId");
+    return pipeline.execute(
       routeContracts.createScene,
-      routeBoundaryContext(request),
+      routeBoundaryContext(request, novelId),
       routeBoundaryInput(request),
       async () => {
         const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
@@ -371,13 +388,14 @@ export function registerNovelBrainRoutes(
         await dependencies.scenes.save(scene);
         return reply.code(201).send(scene);
       },
-    ),
-  );
+    );
+  });
 
-  app.post("/novels/:novelId/generation-tasks", async (request, reply) =>
-    pipeline.execute(
+  app.post("/novels/:novelId/generation-tasks", async (request, reply) => {
+    const novelId = requiredPathParameter(request, "novelId");
+    return pipeline.execute(
       routeContracts.createGenerationTask,
-      routeBoundaryContext(request),
+      routeBoundaryContext(request, novelId),
       routeBoundaryInput(request),
       async () => {
         const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
@@ -408,13 +426,16 @@ export function registerNovelBrainRoutes(
         await dependencies.generationTasks.save(task);
         return reply.code(201).send(task);
       },
-    ),
-  );
+    );
+  });
 
-  app.post("/generation-tasks/:taskId/candidates", async (request, reply) =>
-    pipeline.execute(
+  app.post("/generation-tasks/:taskId/candidates", async (request, reply) => {
+    const taskId = requiredPathParameter(request, "taskId");
+    const task = await dependencies.generationTasks.findById(taskId);
+    if (!task) return reply.code(404).send({ error: "Not Found" });
+    return pipeline.execute(
       routeContracts.submitGenerationCandidate,
-      routeBoundaryContext(request),
+      routeBoundaryContext(request, task.novelId),
       routeBoundaryInput(request),
       async () => {
         const params = z.object({ taskId: z.string().min(1) }).parse(request.params);
@@ -433,8 +454,6 @@ export function registerNovelBrainRoutes(
             change: candidateChangeSchema,
           })
           .parse(request.body);
-        const task = await dependencies.generationTasks.findById(params.taskId);
-        if (!task) return reply.code(404).send({ error: "Not Found" });
 
         const startedTask = startGenerationTask(task, new Date());
         const runtimeResult = await dependencies.runtime.execute({
@@ -457,22 +476,21 @@ export function registerNovelBrainRoutes(
         await dependencies.candidates.save(candidate);
         return reply.code(201).send(candidate);
       },
-    ),
-  );
+    );
+  });
 
-  app.post("/change-sets/:changeSetId/commit", async (request, reply) =>
-    pipeline.execute(
+  app.post("/change-sets/:changeSetId/commit", async (request, reply) => {
+    const params = z.object({ changeSetId: z.string().min(1) }).parse(request.params);
+    const body = commitRequestSchema.parse(request.body);
+    const candidate = await dependencies.candidates.findById(body.candidateId);
+    if (!candidate) {
+      return reply.code(404).send({ error: "Not Found" });
+    }
+    return pipeline.execute(
       routeContracts.commitChangeSetRevision,
-      routeBoundaryContext(request),
+      routeBoundaryContext(request, candidate.novelId),
       routeBoundaryInput(request),
       async () => {
-        const params = z.object({ changeSetId: z.string().min(1) }).parse(request.params);
-        const body = commitRequestSchema.parse(request.body);
-        const candidate = await dependencies.candidates.findById(body.candidateId);
-        if (!candidate) {
-          return reply.code(404).send({ error: "Not Found" });
-        }
-
         const now = new Date();
         const atomicChanges = candidateAtomicChanges(candidate.change);
         const sceneChange = atomicChanges.find(change =>
@@ -561,25 +579,27 @@ export function registerNovelBrainRoutes(
           throw error;
         }
       },
-    ),
-  );
+    );
+  });
 
-  app.get("/novels/:novelId/events", async request =>
-    pipeline.execute(
+  app.get("/novels/:novelId/events", async request => {
+    const novelId = requiredPathParameter(request, "novelId");
+    return pipeline.execute(
       routeContracts.listNovelEvents,
-      routeBoundaryContext(request),
+      routeBoundaryContext(request, novelId),
       routeBoundaryInput(request),
       async () => {
         const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
         return dependencies.eventStore.listByNovel(params.novelId);
       },
-    ),
-  );
+    );
+  });
 
-  app.get("/workspace/:novelId", async (request, reply) =>
-    pipeline.execute(
+  app.get("/workspace/:novelId", async (request, reply) => {
+    const novelId = requiredPathParameter(request, "novelId");
+    return pipeline.execute(
       routeContracts.workspaceFocus,
-      routeBoundaryContext(request),
+      routeBoundaryContext(request, novelId),
       routeBoundaryInput(request),
       async () => {
         if (!workspaceQueryService) return productSurfaceUnavailable(reply);
@@ -597,14 +617,17 @@ export function registerNovelBrainRoutes(
         });
         return reply.code(200).send(view);
       },
-    ),
-  );
+    );
+  });
 
   app.post("/foundation/entries", async (request, reply) => {
     if (!productSurface) return productSurfaceUnavailable(reply);
     const mode = foundationEntryModeSchema.parse(
       (request.body as { mode?: unknown } | undefined)?.mode,
     );
+    const novelId = z
+      .object({ novelId: z.string().min(1) })
+      .parse(request.body).novelId;
     const contractId =
       mode === "idea"
         ? routeContracts.enterFoundationIdea
@@ -613,7 +636,7 @@ export function registerNovelBrainRoutes(
           : routeContracts.createBlankFoundation;
     return pipeline.execute(
       contractId,
-      routeBoundaryContext(request),
+      routeBoundaryContext(request, novelId),
       routeBoundaryInput(request),
       async () => {
         const body = foundationEntryRequestSchema.parse(request.body);
@@ -637,14 +660,18 @@ export function registerNovelBrainRoutes(
     );
   });
 
-  app.post("/foundation/proposals/:proposalId/transitions", async (request, reply) =>
-    pipeline.execute(
+  app.post("/foundation/proposals/:proposalId/transitions", async (request, reply) => {
+    if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
+    const params = z.object({ proposalId: z.string().min(1) }).parse(request.params);
+    const proposal = await productDependencies.foundationPersistence.proposals.findById(
+      params.proposalId,
+    );
+    if (!proposal) return reply.code(404).send({ error: "Proposal not found" });
+    return pipeline.execute(
       routeContracts.reviseProposal,
-      routeBoundaryContext(request),
+      routeBoundaryContext(request, proposal.novelId),
       routeBoundaryInput(request),
       async () => {
-        if (!productSurface) return productSurfaceUnavailable(reply);
-        const params = z.object({ proposalId: z.string().min(1) }).parse(request.params);
         const body = proposalTransitionRequestSchema.parse(request.body);
         const result = await productSurface.advanceProposal({
           proposalId: params.proposalId,
@@ -657,22 +684,22 @@ export function registerNovelBrainRoutes(
         });
         return reply.code(201).send(result);
       },
-    ),
-  );
+    );
+  });
 
-  app.post("/foundation/proposals/:proposalId/adoption-preparations", async (request, reply) =>
-    pipeline.execute(
+  app.post("/foundation/proposals/:proposalId/adoption-preparations", async (request, reply) => {
+    if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
+    const params = z.object({ proposalId: z.string().min(1) }).parse(request.params);
+    const proposal = await productDependencies.foundationPersistence.proposals.findById(
+      params.proposalId,
+    );
+    if (!proposal) return reply.code(404).send({ error: "Proposal not found" });
+    return pipeline.execute(
       routeContracts.adoptProposalContent,
-      routeBoundaryContext(request),
+      routeBoundaryContext(request, proposal.novelId),
       routeBoundaryInput(request),
       async () => {
-        if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
-        const params = z.object({ proposalId: z.string().min(1) }).parse(request.params);
         const body = adoptionPreparationRequestSchema.parse(request.body);
-        const proposal = await productDependencies.foundationPersistence.proposals.findById(
-          params.proposalId,
-        );
-        if (!proposal) return reply.code(404).send({ error: "Proposal not found" });
 
         const parentRevision = reviveChangeSetRevision(body.parentRevision);
         const changeSet = reviveChangeSet(body.changeSet, parentRevision);
@@ -724,16 +751,17 @@ export function registerNovelBrainRoutes(
         });
         return reply.code(201).send(preparation);
       },
-    ),
-  );
+    );
+  });
 
-  app.post("/run-plans", async (request, reply) =>
-    pipeline.execute(
+  app.post("/run-plans", async (request, reply) => {
+    if (!productSurface) return productSurfaceUnavailable(reply);
+    const novelId = z.object({ novelId: z.string().min(1) }).parse(request.body).novelId;
+    return pipeline.execute(
       routeContracts.createRunPlanRevision,
-      routeBoundaryContext(request),
+      routeBoundaryContext(request, novelId),
       routeBoundaryInput(request),
       async () => {
-        if (!productSurface) return productSurfaceUnavailable(reply);
         const body = runPlanRevisionRequestSchema.parse(request.body);
         const revision = await productSurface.createRunPlanRevision({
           id: body.id,
@@ -749,22 +777,22 @@ export function registerNovelBrainRoutes(
         });
         return reply.code(201).send(revision);
       },
-    ),
-  );
+    );
+  });
 
   app.post("/run-plans/:planRevisionId/approvals", async (request, reply) => {
     const params = z.object({ planRevisionId: z.string().min(1) }).parse(request.params);
+    if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
+    const revision = await productDependencies.runPersistence.planRevisions.findById(
+      params.planRevisionId,
+    );
+    if (!revision) return reply.code(404).send({ error: "Run Plan Revision not found" });
     return pipeline.execute(
       routeContracts.approveRunPlan,
-      routeBoundaryContext(request),
+      routeBoundaryContext(request, revision.novelId),
       routeBoundaryInput(request),
       async () => {
-        if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
         const body = runPlanApprovalRequestSchema.parse(request.body);
-        const revision = await productDependencies.runPersistence.planRevisions.findById(
-          params.planRevisionId,
-        );
-        if (!revision) return reply.code(404).send({ error: "Run Plan Revision not found" });
         const approval = await productSurface.approveRunPlan({
           approvalId: body.approvalId,
           planRevisionId: params.planRevisionId,
@@ -777,18 +805,23 @@ export function registerNovelBrainRoutes(
     );
   });
 
-  app.post("/runs", async (request, reply) =>
-    pipeline.execute(
+  app.post("/runs", async (request, reply) => {
+    if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
+    const body = startRunRequestSchema.parse(request.body);
+    return pipeline.execute(
       routeContracts.startRun,
-      routeBoundaryContext(request),
+      routeBoundaryContext(request, body.novelId),
       routeBoundaryInput(request),
       async () => {
-        if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
-        const body = startRunRequestSchema.parse(request.body);
         const revision = await productDependencies.runPersistence.planRevisions.findById(
           body.runPlanRevisionId,
         );
         if (!revision) return reply.code(404).send({ error: "Run Plan Revision not found" });
+        if (revision.novelId !== body.novelId) {
+          throw new ResourceIsolationError(
+            `Run Plan Revision ${revision.id} belongs to a different workspace`,
+          );
+        }
         const approval = await productDependencies.runPersistence.planApprovals.findByRevisionId(
           revision.id,
           revision.novelId,
@@ -804,19 +837,19 @@ export function registerNovelBrainRoutes(
         });
         return reply.code(201).send(view);
       },
-    ),
-  );
+    );
+  });
 
-  app.post("/runs/:runId/pause", async (request, reply) =>
-    pipeline.execute(
+  app.post("/runs/:runId/pause", async (request, reply) => {
+    if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
+    const params = z.object({ runId: z.string().min(1) }).parse(request.params);
+    const run = await productDependencies.runPersistence.runs.findById(params.runId);
+    if (!run) return reply.code(404).send({ error: "Production Run not found" });
+    return pipeline.execute(
       routeContracts.pauseRun,
-      routeBoundaryContext(request),
+      routeBoundaryContext(request, run.novelId),
       routeBoundaryInput(request),
       async () => {
-        if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
-        const params = z.object({ runId: z.string().min(1) }).parse(request.params);
-        const run = await productDependencies.runPersistence.runs.findById(params.runId);
-        if (!run) return reply.code(404).send({ error: "Production Run not found" });
         const body = runTransitionRequestSchema.parse(request.body ?? {});
         const view = await productSurface.pauseRun({
           runId: params.runId,
@@ -825,19 +858,19 @@ export function registerNovelBrainRoutes(
         });
         return reply.code(200).send(view);
       },
-    ),
-  );
+    );
+  });
 
-  app.post("/runs/:runId/resume", async (request, reply) =>
-    pipeline.execute(
+  app.post("/runs/:runId/resume", async (request, reply) => {
+    if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
+    const params = z.object({ runId: z.string().min(1) }).parse(request.params);
+    const run = await productDependencies.runPersistence.runs.findById(params.runId);
+    if (!run) return reply.code(404).send({ error: "Production Run not found" });
+    return pipeline.execute(
       routeContracts.resumeRun,
-      routeBoundaryContext(request),
+      routeBoundaryContext(request, run.novelId),
       routeBoundaryInput(request),
       async () => {
-        if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
-        const params = z.object({ runId: z.string().min(1) }).parse(request.params);
-        const run = await productDependencies.runPersistence.runs.findById(params.runId);
-        if (!run) return reply.code(404).send({ error: "Production Run not found" });
         const body = runTransitionRequestSchema.parse(request.body ?? {});
         const view = await productSurface.resumeRun({
           runId: params.runId,
@@ -845,29 +878,30 @@ export function registerNovelBrainRoutes(
         });
         return reply.code(200).send(view);
       },
-    ),
-  );
+    );
+  });
 
-  app.get("/runs/:runId/status", async (request, reply) =>
-    pipeline.execute(
+  app.get("/runs/:runId/status", async (request, reply) => {
+    if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
+    const params = z.object({ runId: z.string().min(1) }).parse(request.params);
+    const run = await productDependencies.runPersistence.runs.findById(params.runId);
+    if (!run) return reply.code(404).send({ error: "Production Run not found" });
+    return pipeline.execute(
       routeContracts.runStatus,
-      routeBoundaryContext(request),
+      routeBoundaryContext(request, run.novelId),
       routeBoundaryInput(request),
       async () => {
-        if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
-        const params = z.object({ runId: z.string().min(1) }).parse(request.params);
-        const run = await productDependencies.runPersistence.runs.findById(params.runId);
-        if (!run) return reply.code(404).send({ error: "Production Run not found" });
         const view = await productSurface.getRunStatus({ runId: params.runId });
         return reply.code(200).send(view);
       },
-    ),
-  );
+    );
+  });
 
-  app.get("/novels/:novelId/attention", async (request, reply) =>
-    pipeline.execute(
+  app.get("/novels/:novelId/attention", async (request, reply) => {
+    const novelId = requiredPathParameter(request, "novelId");
+    return pipeline.execute(
       routeContracts.recallAttention,
-      routeBoundaryContext(request),
+      routeBoundaryContext(request, novelId),
       routeBoundaryInput(request),
       async () => {
         if (!productSurface) return productSurfaceUnavailable(reply);
@@ -875,18 +909,19 @@ export function registerNovelBrainRoutes(
         const view = await productSurface.getAttention({ novelId: params.novelId });
         return reply.code(200).send(view);
       },
-    ),
-  );
+    );
+  });
 
   app.post("/attention/:itemId/dispositions", async (request, reply) => {
     const params = z.object({ itemId: z.string().min(1) }).parse(request.params);
+    const body = attentionDispositionRequestSchema.parse(request.body);
+    const context = recallBoundaryContext(request, params.itemId, body.novelId);
     return pipeline.execute(
       routeContracts.recordRecallDisposition,
-      recallBoundaryContext(request, params.itemId),
+      context,
       routeBoundaryInput(request),
       async () => {
         if (!productSurface) return productSurfaceUnavailable(reply);
-        const body = attentionDispositionRequestSchema.parse(request.body);
         const record = await productSurface.disposeAttention({
           item: {
             itemId: params.itemId,
@@ -899,7 +934,7 @@ export function registerNovelBrainRoutes(
             },
           },
           action: body.action,
-          actorId: body.actorId ?? routeBoundaryContext(request).principal.subjectId,
+          actorId: body.actorId ?? context.principal.subjectId,
           occurredAt: new Date().toISOString(),
           ...(body.snoozedUntil === undefined ? {} : { snoozedUntil: body.snoozedUntil }),
           ...(body.actionId === undefined ? {} : { actionId: body.actionId }),
@@ -1194,8 +1229,12 @@ function productSurfaceUnavailable(reply: FastifyReply) {
  * Recall attention is auditable, so the boundary resource and correlation bind
  * the same recall item identity.
  */
-function recallBoundaryContext(request: FastifyRequest, itemId: string): HttpBoundaryContext {
-  const base = routeBoundaryContext(request);
+function recallBoundaryContext(
+  request: FastifyRequest,
+  itemId: string,
+  workspaceId: string,
+): HttpBoundaryContext {
+  const base = routeBoundaryContext(request, workspaceId);
   return {
     ...base,
     resource: { kind: "recall", id: itemId },
