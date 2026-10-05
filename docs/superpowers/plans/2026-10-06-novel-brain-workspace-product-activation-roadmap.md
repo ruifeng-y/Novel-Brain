@@ -327,6 +327,19 @@ lens that can only read cannot reach W1's exit criteria on a fresh deployment.
 persisting a dangling membership pointer. Reordering writes through the existing `reorderArcChapters`
 and `reorderChapterScenes` domain functions and does not re-implement ordering.
 
+Explicit acceptance for the container direction, which Task 1.1's four issue kinds do not cover:
+
+```text
+Read   when getStructure walks container order and an id in Arc.chapterIds or Chapter.sceneIds has no
+       corresponding entity, it must not silently drop the entry and must not fabricate a node;
+       the structure is reported degraded and the dangling id is surfaced
+Write  reorderArcChapters and reorderChapterScenes must reject an input id that does not exist or
+       belongs to another novel; a dangling container id must never be persisted
+```
+
+Without both, W1's exit criterion "a pointer/container mismatch is visible as a rejection or a degraded
+state" can pass silently on ghost entries.
+
 - [ ] **Step 3b: Write the failing authoring test**
 
 ```ts
