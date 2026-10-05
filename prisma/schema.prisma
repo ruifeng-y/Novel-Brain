@@ -53,3 +53,12 @@ model DomainEvent {
   @@index([novelId])
   @@index([context, name])
 }
+
+model IdempotencyReservation {
+  key         String   @id
+  novelId     String
+  fingerprint String
+  createdAt   DateTime @default(now())
+
+  @@index([novelId])
+}
