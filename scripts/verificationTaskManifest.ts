@@ -219,6 +219,18 @@ export const verificationTaskProfiles = {
       "regression",
     ],
   },
+  "P5.1-P5.2": {
+    id: "P5.1-P5.2",
+    label: "[task:P5.1-P5.2]",
+    evidenceLabels: ["[task:P5.1]", "[task:P5.2]"],
+    requiredGates: [
+      "domain",
+      "integration",
+      "concurrency",
+      "cross-system",
+      "regression",
+    ],
+  },
   "7.4-7.5": {
     id: "7.4-7.5",
     label: "[task:7.4-7.5]",
