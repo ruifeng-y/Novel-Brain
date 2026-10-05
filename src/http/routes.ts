@@ -1,6 +1,21 @@
-import type { FastifyInstance, FastifyRequest } from "fastify";
+import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
 import { z } from "zod";
 import type { HttpBoundaryContext, HttpBoundaryPipeline } from "./httpBoundaryPipeline";
+import {
+  createProductSurfaceCommandService,
+  type ProductSurfaceCommandDependencies,
+  type ProposalWorkflowChangeInput,
+  type ProductSurface,
+} from "../app/productSurfaceCommandService";
+import { createWorkspaceProductQueryService } from "../app/workspaceProductQueryService";
+import type { FoundationWorkspaceFocus } from "../story/application/foundationWorkspaceContract";
+import type { FoundationGenerationOptions } from "../story/application/foundationEntryService";
+import {
+  createAdoptionDecision,
+  type AdoptionTarget,
+} from "../story/domain/adoptionDecision";
+import { proposalSectionHash } from "../story/domain/narrativeProposal";
+import { createChangeSet, replaceChangeSetChanges, type ChangeSet } from "../production/domain/changeSet";
 import type { Repository, RevisionedRepository } from "../shared/application/repository";
 import type { VersionSet } from "../shared/domain/versioning";
 import type { Novel } from "../narrative/novel/domain/novel";
@@ -61,6 +76,7 @@ export interface ApiDependencies {
   readonly eventStore: EventStore;
   readonly runtime: RuntimeAdapter;
   readonly commitTransaction: CommitChangeSetRevisionTransaction;
+  readonly product?: ProductSurfaceCommandDependencies;
 }
 
 const versionReferenceSchema = z.object({
@@ -213,6 +229,19 @@ const routeContracts = {
   submitGenerationCandidate: "generation.command.submit-generation-candidate",
   commitChangeSetRevision: "commit.command.commit-change-set-revision",
   listNovelEvents: "commit.query.commit-evidence",
+  workspaceFocus: "foundation.query.workspace-focus",
+  enterFoundationIdea: "foundation.command.enter-foundation-idea",
+  extractFoundationText: "foundation.command.extract-foundation-text",
+  createBlankFoundation: "foundation.command.create-blank-foundation",
+  reviseProposal: "foundation.command.revise-proposal",
+  adoptProposalContent: "foundation.command.adopt-proposal-content",
+  createRunPlanRevision: "run.command.create-run-plan-revision",
+  startRun: "run.command.start-run",
+  pauseRun: "run.command.pause-run",
+  resumeRun: "run.command.resume-run",
+  runStatus: "run.query.run-status",
+  recallAttention: "recall.query.recall-attention",
+  recordRecallDisposition: "recall.command.record-recall-disposition",
 } as const;
 
 function headerValue(request: FastifyRequest, name: string): string | undefined {
@@ -280,6 +309,18 @@ export function registerNovelBrainRoutes(
     }
     return reply.send(error);
   });
+
+  const productDependencies = dependencies.product;
+  const workspaceQueryService =
+    productDependencies === undefined
+      ? undefined
+      : createWorkspaceProductQueryService({
+          foundationPersistence: productDependencies.foundationPersistence,
+        });
+  const productSurface: ProductSurface | undefined =
+    productDependencies === undefined
+      ? undefined
+      : createProductSurfaceCommandService(productDependencies);
 
   app.post("/novels", async (request, reply) =>
     pipeline.execute(
@@ -527,6 +568,301 @@ export function registerNovelBrainRoutes(
       },
     ),
   );
+
+  app.get("/workspace/:novelId", async (request, reply) =>
+    pipeline.execute(
+      routeContracts.workspaceFocus,
+      routeBoundaryContext(request),
+      routeBoundaryInput(request),
+      async () => {
+        if (!workspaceQueryService) return productSurfaceUnavailable(reply);
+        const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
+        const query = workspaceFocusQuerySchema.parse(request.query ?? {});
+        const focus: FoundationWorkspaceFocus = {
+          object: query.object ?? "story-foundation",
+          ...(query.objectId === undefined ? {} : { objectId: query.objectId }),
+          mode: query.mode ?? "design",
+          ...(query.taskId === undefined ? {} : { taskId: query.taskId }),
+        };
+        const view = await workspaceQueryService.getWorkspaceView({
+          novelId: params.novelId,
+          focus,
+        });
+        return reply.code(200).send(view);
+      },
+    ),
+  );
+
+  app.post("/foundation/entries", async (request, reply) => {
+    if (!productSurface) return productSurfaceUnavailable(reply);
+    const mode = foundationEntryModeSchema.parse(
+      (request.body as { mode?: unknown } | undefined)?.mode,
+    );
+    const contractId =
+      mode === "idea"
+        ? routeContracts.enterFoundationIdea
+        : mode === "existing_text"
+          ? routeContracts.extractFoundationText
+          : routeContracts.createBlankFoundation;
+    return pipeline.execute(
+      contractId,
+      routeBoundaryContext(request),
+      routeBoundaryInput(request),
+      async () => {
+        const body = foundationEntryRequestSchema.parse(request.body);
+        const entry = await productSurface.createFoundationEntry({
+          entryId: body.entryId,
+          novelId: body.novelId,
+          mode: body.mode,
+          ...(body.proposalId === undefined ? {} : { proposalId: body.proposalId }),
+          ...(body.idea === undefined ? {} : { idea: body.idea }),
+          ...(body.text === undefined ? {} : { text: body.text }),
+          ...(body.proposalType === undefined ? {} : { proposalType: body.proposalType }),
+          ...(body.scope === undefined ? {} : { scope: body.scope }),
+          ...(body.occurredAt === undefined ? {} : { occurredAt: new Date(body.occurredAt) }),
+          ...(body.sourceReference === undefined ? {} : { sourceReference: body.sourceReference }),
+          ...(body.generation === undefined
+            ? {}
+            : { generation: body.generation as FoundationGenerationOptions }),
+        });
+        return reply.code(201).send(entry);
+      },
+    );
+  });
+
+  app.post("/foundation/proposals/:proposalId/transitions", async (request, reply) =>
+    pipeline.execute(
+      routeContracts.reviseProposal,
+      routeBoundaryContext(request),
+      routeBoundaryInput(request),
+      async () => {
+        if (!productSurface) return productSurfaceUnavailable(reply);
+        const params = z.object({ proposalId: z.string().min(1) }).parse(request.params);
+        const body = proposalTransitionRequestSchema.parse(request.body);
+        const result = await productSurface.advanceProposal({
+          proposalId: params.proposalId,
+          from: body.from,
+          to: body.to,
+          changes: body.changes as ProposalWorkflowChangeInput[],
+          ...(body.actor === undefined ? {} : { actor: body.actor }),
+          ...(body.evidence === undefined ? {} : { evidence: body.evidence }),
+          revisedAt: body.revisedAt === undefined ? new Date() : new Date(body.revisedAt),
+        });
+        return reply.code(201).send(result);
+      },
+    ),
+  );
+
+  app.post("/foundation/proposals/:proposalId/adoption-preparations", async (request, reply) =>
+    pipeline.execute(
+      routeContracts.adoptProposalContent,
+      routeBoundaryContext(request),
+      routeBoundaryInput(request),
+      async () => {
+        if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
+        const params = z.object({ proposalId: z.string().min(1) }).parse(request.params);
+        const body = adoptionPreparationRequestSchema.parse(request.body);
+        const proposal = await productDependencies.foundationPersistence.proposals.findById(
+          params.proposalId,
+        );
+        if (!proposal) return reply.code(404).send({ error: "Proposal not found" });
+
+        const parentRevision = reviveChangeSetRevision(body.parentRevision);
+        const changeSet = reviveChangeSet(body.changeSet, parentRevision);
+        const decidedAt =
+          body.decision.decidedAt === undefined ? new Date() : new Date(body.decision.decidedAt);
+        const targets: AdoptionTarget[] = body.decision.targets.map(target => {
+          const section = proposal.sections.find(entry => entry.id === target.sectionIdentity);
+          if (!section) throw new Error("Adoption target section must exist in Proposal");
+          const contentHash = proposalSectionHash(section);
+          return {
+            id: target.id,
+            scope: {
+              proposalIdentity: proposal.id,
+              proposalRevision: proposal.currentRevisionId,
+              sectionIdentity: target.sectionIdentity,
+            },
+            targetType: target.targetType,
+            objectId: target.objectId,
+            ...(target.subAddress === undefined ? {} : { subAddress: target.subAddress }),
+            proposedChangeId: target.proposedChangeId,
+            payload: target.payload,
+            basedOnVersionSet: target.basedOnVersionSet,
+            adoptedContent: {
+              contentReference: {
+                identity: section.id,
+                version: proposal.currentRevisionId,
+                hash: contentHash,
+              },
+              contentHash,
+            },
+          };
+        });
+        const decision = createAdoptionDecision({
+          proposal,
+          id: body.decision.id,
+          decisionType: "adopt",
+          targets,
+          actor: body.decision.actor,
+          reason: body.decision.reason,
+          decidedAt,
+        });
+        const preparation = await productSurface.prepareAdoption({
+          changeSet,
+          parentRevision,
+          proposal,
+          decision,
+          revisionId: body.revisionId,
+          createdAt: decidedAt,
+        });
+        return reply.code(201).send(preparation);
+      },
+    ),
+  );
+
+  app.post("/run-plans", async (request, reply) =>
+    pipeline.execute(
+      routeContracts.createRunPlanRevision,
+      routeBoundaryContext(request),
+      routeBoundaryInput(request),
+      async () => {
+        if (!productSurface) return productSurfaceUnavailable(reply);
+        const body = runPlanRevisionRequestSchema.parse(request.body);
+        const revision = await productSurface.createRunPlanRevision({
+          id: body.id,
+          planId: body.planId,
+          novelId: body.novelId,
+          revisionNumber: body.revisionNumber,
+          ...(body.parentRevisionId === undefined
+            ? {}
+            : { parentRevisionId: body.parentRevisionId }),
+          goal: body.goal,
+          steps: body.steps,
+          createdAt: body.createdAt === undefined ? new Date() : new Date(body.createdAt),
+        });
+        return reply.code(201).send(revision);
+      },
+    ),
+  );
+
+  app.post("/runs", async (request, reply) =>
+    pipeline.execute(
+      routeContracts.startRun,
+      routeBoundaryContext(request),
+      routeBoundaryInput(request),
+      async () => {
+        if (!productSurface || !productDependencies) return productSurfaceUnavailable(reply);
+        const body = startRunRequestSchema.parse(request.body);
+        const revision = await productDependencies.runPersistence.planRevisions.findById(
+          body.runPlanRevisionId,
+        );
+        if (!revision) return reply.code(404).send({ error: "Run Plan Revision not found" });
+        const view = await productSurface.startRun({
+          id: body.id,
+          novelId: body.novelId,
+          runPlanRevision: revision,
+          createdAt: body.createdAt === undefined ? new Date() : new Date(body.createdAt),
+        });
+        return reply.code(201).send(view);
+      },
+    ),
+  );
+
+  app.post("/runs/:runId/pause", async (request, reply) =>
+    pipeline.execute(
+      routeContracts.pauseRun,
+      routeBoundaryContext(request),
+      routeBoundaryInput(request),
+      async () => {
+        if (!productSurface) return productSurfaceUnavailable(reply);
+        const params = z.object({ runId: z.string().min(1) }).parse(request.params);
+        const body = runTransitionRequestSchema.parse(request.body ?? {});
+        const view = await productSurface.pauseRun({
+          runId: params.runId,
+          at: body.at === undefined ? new Date() : new Date(body.at),
+          ...(body.reason === undefined ? {} : { reason: body.reason }),
+        });
+        return reply.code(200).send(view);
+      },
+    ),
+  );
+
+  app.post("/runs/:runId/resume", async (request, reply) =>
+    pipeline.execute(
+      routeContracts.resumeRun,
+      routeBoundaryContext(request),
+      routeBoundaryInput(request),
+      async () => {
+        if (!productSurface) return productSurfaceUnavailable(reply);
+        const params = z.object({ runId: z.string().min(1) }).parse(request.params);
+        const body = runTransitionRequestSchema.parse(request.body ?? {});
+        const view = await productSurface.resumeRun({
+          runId: params.runId,
+          at: body.at === undefined ? new Date() : new Date(body.at),
+        });
+        return reply.code(200).send(view);
+      },
+    ),
+  );
+
+  app.get("/runs/:runId/status", async (request, reply) =>
+    pipeline.execute(
+      routeContracts.runStatus,
+      routeBoundaryContext(request),
+      routeBoundaryInput(request),
+      async () => {
+        if (!productSurface) return productSurfaceUnavailable(reply);
+        const params = z.object({ runId: z.string().min(1) }).parse(request.params);
+        const view = await productSurface.getRunStatus({ runId: params.runId });
+        return reply.code(200).send(view);
+      },
+    ),
+  );
+
+  app.get("/novels/:novelId/attention", async (request, reply) =>
+    pipeline.execute(
+      routeContracts.recallAttention,
+      routeBoundaryContext(request),
+      routeBoundaryInput(request),
+      async () => {
+        if (!productSurface) return productSurfaceUnavailable(reply);
+        const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
+        const view = await productSurface.getAttention({ novelId: params.novelId });
+        return reply.code(200).send(view);
+      },
+    ),
+  );
+
+  app.post("/attention/:itemId/dispositions", async (request, reply) => {
+    const params = z.object({ itemId: z.string().min(1) }).parse(request.params);
+    return pipeline.execute(
+      routeContracts.recordRecallDisposition,
+      recallBoundaryContext(request, params.itemId),
+      routeBoundaryInput(request),
+      async () => {
+        if (!productSurface) return productSurfaceUnavailable(reply);
+        const body = attentionDispositionRequestSchema.parse(request.body);
+        const record = await productSurface.disposeAttention({
+          item: {
+            itemId: params.itemId,
+            novelId: body.novelId,
+            candidateId: body.candidateId,
+            evidenceFingerprint: body.evidenceFingerprint,
+            explanation: {
+              reason: body.reason,
+              evidenceReferences: body.evidenceReferences,
+            },
+          },
+          action: body.action,
+          actorId: body.actorId ?? routeBoundaryContext(request).principal.subjectId,
+          occurredAt: new Date().toISOString(),
+          ...(body.snoozedUntil === undefined ? {} : { snoozedUntil: body.snoozedUntil }),
+          ...(body.actionId === undefined ? {} : { actionId: body.actionId }),
+        });
+        return reply.code(201).send(record);
+      },
+    );
+  });
 }
 
 function candidateAtomicChanges(
@@ -636,4 +972,223 @@ function reviewsForRequirements(input: {
       createdAt: input.createdAt,
     }),
   );
+}
+
+const workspaceFocusQuerySchema = z.object({
+  object: z
+    .enum([
+      "story-foundation",
+      "proposal",
+      "canonical_fact",
+      "plan",
+      "structure",
+      "manuscript",
+      "story_state",
+    ])
+    .optional(),
+  objectId: z.string().min(1).optional(),
+  mode: z.enum(["design", "review"]).optional(),
+  taskId: z.string().min(1).optional(),
+});
+
+const foundationEntryModeSchema = z.enum(["idea", "existing_text", "blank"]);
+
+const sourceReferenceSchema = z.object({
+  identity: z.string().min(1),
+  version: z.string().min(1),
+  hash: z.string().min(1),
+});
+
+const foundationEntryGenerationOptionsSchema = z.object({
+  taskId: z.string().min(1),
+  agentRole: z.enum([
+    "planner",
+    "writer",
+    "editor",
+    "reviewer",
+    "consistency_agent",
+    "memory_agent",
+  ]),
+  modelPolicy: modelPolicySchema,
+  basedOnVersionSet: versionSetSchema,
+  context: freeFormRecordSchema.optional(),
+});
+
+const foundationEntryRequestSchema = z.object({
+  entryId: z.string().min(1),
+  novelId: z.string().min(1),
+  proposalId: z.string().min(1).optional(),
+  mode: foundationEntryModeSchema,
+  idea: z.string().min(1).optional(),
+  text: z.string().min(1).optional(),
+  proposalType: z.enum([
+    "story_concept",
+    "core_conflict",
+    "world_direction",
+    "protagonist_direction",
+    "main_plot_story_engine",
+    "character",
+    "relationship",
+    "plot_thread",
+    "foreshadowing",
+    "theme",
+    "long_form_direction",
+  ]).optional(),
+  scope: freeFormRecordSchema.optional(),
+  occurredAt: z.string().min(1).optional(),
+  sourceReference: sourceReferenceSchema.optional(),
+  generation: foundationEntryGenerationOptionsSchema.optional(),
+});
+
+const proposalTransitionRequestSchema = z.object({
+  from: z.enum(["frame", "explore", "deepen", "refine"]),
+  to: z.enum(["frame", "explore", "deepen", "refine"]),
+  changes: z.array(z.unknown()).min(1),
+  actor: z.enum(["author", "ai", "system"]).optional(),
+  evidence: sourceReferenceSchema.optional(),
+  revisedAt: z.string().min(1).optional(),
+});
+
+const adoptionTargetRequestSchema = z.object({
+  id: z.string().min(1),
+  sectionIdentity: z.string().min(1),
+  targetType: z.enum(["canonical_fact", "plan", "structure", "manuscript", "story_state"]),
+  objectId: z.string().min(1),
+  subAddress: z.string().min(1).optional(),
+  proposedChangeId: z.string().min(1),
+  payload: freeFormRecordSchema,
+  basedOnVersionSet: versionSetSchema,
+});
+
+const adoptionPreparationRequestSchema = z.object({
+  revisionId: z.string().min(1),
+  changeSet: z.object({
+    id: z.string().min(1),
+    novelId: z.string().min(1),
+    initialRevisionId: z.string().min(1),
+    createdAt: z.string().min(1),
+  }),
+  parentRevision: z.object({
+    revisionId: z.string().min(1),
+    changeSetId: z.string().min(1),
+    novelId: z.string().min(1),
+    revisionNumber: z.number().int().positive(),
+    trigger: z.object({
+      type: z.enum(["initial_assembly", "edit", "conflict_resolution", "rebase", "regenerate"]),
+      references: z.array(z.string().min(1)),
+    }),
+    changes: z.array(z.unknown()),
+    createdAt: z.string().min(1),
+  }),
+  decision: z.object({
+    id: z.string().min(1),
+    reason: z.string().min(1),
+    actor: z.object({
+      type: z.enum(["author", "policy"]),
+      identity: z.string().min(1),
+    }),
+    decidedAt: z.string().min(1).optional(),
+    targets: z.array(adoptionTargetRequestSchema).min(1),
+  }),
+});
+
+const runPlanStepSchema = z.object({
+  id: z.string().min(1),
+  ordinal: z.number().int().positive(),
+  generationTaskId: z.string().min(1),
+  dependsOn: z.array(z.string().min(1)),
+});
+
+const runPlanRevisionRequestSchema = z.object({
+  id: z.string().min(1),
+  planId: z.string().min(1),
+  novelId: z.string().min(1),
+  revisionNumber: z.number().int().positive(),
+  parentRevisionId: z.string().min(1).optional(),
+  goal: z.string().min(1),
+  steps: z.array(runPlanStepSchema).min(1),
+  createdAt: z.string().min(1).optional(),
+});
+
+const startRunRequestSchema = z.object({
+  id: z.string().min(1),
+  novelId: z.string().min(1),
+  runPlanRevisionId: z.string().min(1),
+  createdAt: z.string().min(1).optional(),
+});
+
+const runTransitionRequestSchema = z.object({
+  at: z.string().min(1).optional(),
+  reason: z.string().min(1).optional(),
+});
+
+const attentionDispositionRequestSchema = z.object({
+  novelId: z.string().min(1),
+  candidateId: z.string().min(1),
+  evidenceFingerprint: z.string().min(1),
+  reason: z.string().min(1),
+  evidenceReferences: z.array(z.string().min(1)).min(1),
+  action: z.enum(["inspect", "dismiss", "snooze", "confirm", "ignore", "why"]),
+  actorId: z.string().min(1).optional(),
+  snoozedUntil: z.string().min(1).optional(),
+  actionId: z.string().min(1).optional(),
+});
+
+function productSurfaceUnavailable(reply: FastifyReply) {
+  return reply.code(503).send({ error: "Product surface unavailable" });
+}
+
+/**
+ * Recall attention is auditable, so the boundary resource and correlation bind
+ * the same recall item identity.
+ */
+function recallBoundaryContext(request: FastifyRequest, itemId: string): HttpBoundaryContext {
+  const base = routeBoundaryContext(request);
+  return {
+    ...base,
+    resource: { kind: "recall", id: itemId },
+    correlation: { ...base.correlation, recallId: itemId },
+  };
+}
+
+function reviveChange(value: unknown): Change {
+  return createChange(value as Parameters<typeof createChange>[0]);
+}
+
+function reviveChangeSetRevision(
+  payload: z.infer<typeof adoptionPreparationRequestSchema>["parentRevision"],
+): ChangeSetRevision {
+  const base = createInitialChangeSetRevision({
+    revisionId: payload.revisionId,
+    changeSetId: payload.changeSetId,
+    novelId: payload.novelId,
+    createdAt: new Date(payload.createdAt),
+  });
+  return Object.freeze({
+    ...base,
+    revisionNumber: payload.revisionNumber,
+    trigger: Object.freeze({
+      type: payload.trigger.type,
+      references: Object.freeze([...payload.trigger.references]),
+    }),
+    changes: Object.freeze(payload.changes.map(reviveChange)),
+  });
+}
+
+function reviveChangeSet(
+  payload: z.infer<typeof adoptionPreparationRequestSchema>["changeSet"],
+  parentRevision: ChangeSetRevision,
+): ChangeSet {
+  const base = createChangeSet({
+    id: payload.id,
+    novelId: payload.novelId,
+    initialRevisionId: payload.initialRevisionId,
+    createdAt: new Date(payload.createdAt),
+  });
+  return replaceChangeSetChanges({
+    changeSet: base,
+    changes: parentRevision.changes,
+    revisionId: parentRevision.revisionId,
+    updatedAt: new Date(parentRevision.createdAt),
+  });
 }

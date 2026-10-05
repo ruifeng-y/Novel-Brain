@@ -4,6 +4,10 @@ import type { Novel } from "../narrative/novel/domain/novel";
 import type { Candidate } from "../production/domain/candidate";
 import type { GenerationTask } from "../production/domain/generationTask";
 import { DeterministicRuntime } from "../production/runtime/deterministicRuntime";
+import { DeterministicFoundationRuntime } from "../production/runtime/deterministicFoundationRuntime";
+import { createInMemoryNarrativeProposalPersistence } from "../story/application/narrativeProposalPersistence";
+import { createInMemoryRunOrchestrationPersistence } from "../production/application/runPlanPersistence";
+import { createInMemoryAttentionDispositionPersistence } from "../recall/attention/attentionDispositionPersistence";
 import { createNovelBrainServer } from "../http/server";
 import type { ApiDependencies } from "../http/routes";
 
@@ -20,6 +24,12 @@ export function createInMemoryEngineDependencies(): ApiDependencies {
     eventStore: commitTransaction.eventStore,
     runtime: new DeterministicRuntime(),
     commitTransaction,
+    product: {
+      foundationPersistence: createInMemoryNarrativeProposalPersistence(),
+      runPersistence: createInMemoryRunOrchestrationPersistence(),
+      attentionPersistence: createInMemoryAttentionDispositionPersistence(),
+      runtime: new DeterministicFoundationRuntime(),
+    },
   };
 }
 
