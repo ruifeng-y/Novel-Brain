@@ -295,6 +295,7 @@ export function createStructuralNavigationQuery(dependencies: {
 export function createStructureCommandService(dependencies: {
   readonly arcs: Repository<Arc>;
   readonly chapters: Repository<Chapter>;
+  readonly scenes: RevisionedRepository<Scene>;
 }): {
   createArc(input: { readonly id: string; readonly novelId: string; readonly title: string; readonly createdAt: Date }): Promise<Arc>;
   createChapter(input: {
