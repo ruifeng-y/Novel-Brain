@@ -9,6 +9,10 @@
  * and Lens for a Focus arrive from the server resolution. This module holds
  * only the session vocabulary the shell needs to render the Lens Rail
  * (Spec 3.3) and the semantic zoom ordering (Spec 4.4).
+ *
+ * The Lens is a session-level property (Spec 3.3). A Focus Stack entry carries
+ * only what navigation needs to restore: the focus identity and its Mode.
+ * Zoom is stored per Focus (Spec 4.4), so returning to a Focus restores it.
  */
 
 export const WORKSPACE_LENSES = [
@@ -75,6 +79,22 @@ export function currentFocus(state) {
   return state.focusStack[state.focusStack.length - 1];
 }
 
+/** The session Lens. Navigation never reads or writes a per-focus Lens. */
+export function currentLens(state) {
+  return WORKSPACE_LENSES.indexOf(state.lens) >= 0 ? state.lens : null;
+}
+
+/**
+ * Initialises the session Lens from the Object Entry Contract the first time a
+ * Focus resolves in a session. It never overrides a Lens the author chose, so
+ * navigation can never pull the Lens back to an object default.
+ */
+export function initialiseLens(state, lens) {
+  if (WORKSPACE_LENSES.indexOf(lens) < 0) return state;
+  if (currentLens(state) !== null) return state;
+  return withChanges(state, { lens: lens });
+}
+
 export function applyResolution(state, resolution) {
   return withChanges(state, { resolution: resolution || null });
 }
@@ -96,7 +116,6 @@ export function navigate(state, target) {
     kind: target.kind,
     id: typeof target.id === "string" ? target.id : "",
     mode: typeof target.mode === "string" ? target.mode : null,
-    lens: WORKSPACE_LENSES.indexOf(target.lens) >= 0 ? target.lens : null,
     depth: depthOf(target.kind),
   };
 
@@ -130,18 +149,15 @@ export function focusToIndex(state, index) {
  * Changes the session Lens while preserving the current focus, its Mode, and
  * the pinned context. A Lens never changes narrative state and never mutates a
  * generation context. When the current focus cannot be represented under the
- * new Lens the shell asks the server for the nearest valid resolution; it
- * never returns the author to a home view.
+ * new Lens the shell asks the server for the nearest valid containing or
+ * related focus; it never returns the author to a home view and it never rolls
+ * the Lens back.
  */
 export function setLens(state, lens) {
   if (WORKSPACE_LENSES.indexOf(lens) < 0) return state;
-  const current = currentFocus(state);
-  if (current === null) return withChanges(state, { lens: lens });
-  const top = Object.assign({}, current, { lens: lens });
-  return withChanges(state, {
-    focusStack: state.focusStack.slice(0, -1).concat([top]),
-    lens: lens,
-  });
+  // Session-level only: the focus stack, the current focus, its Mode, and the
+  // pinned context are all untouched.
+  return withChanges(state, { lens: lens });
 }
 
 /**

@@ -4,8 +4,10 @@ import {
   applyResolution,
   createSessionState,
   currentFocus,
+  currentLens,
   focusToIndex,
   goBack,
+  initialiseLens,
   navigate,
   pin,
   setLens,
@@ -179,8 +181,8 @@ function chip(label) {
   return `<span class="ws-chip">${escapeText(label)}</span>`;
 }
 
-function renderLensRail(session, current) {
-  const active = (current && current.lens) || session.lens;
+function renderLensRail(session) {
+  const active = currentLens(session);
   return (
     `<ul class="ws-lens-list">` +
     WORKSPACE_LENSES.map(lens => {
@@ -282,7 +284,7 @@ function renderWhy(session, current, view) {
   const facts = [
     `对象：${kindLabel(current.kind)}`,
     `模式：${modeLabel(activeMode)}`,
-    `镜头：${lensLabel(current.lens)}`,
+    `镜头：${lensLabel(currentLens(session))}`,
     `默认镜头：${lensLabel(defaultLens)}`,
     `粒度：${zoomLabel(zoomFor(session, current.key))}`,
   ];
@@ -318,6 +320,16 @@ function renderPlaceholderSurface(session, current) {
   );
 }
 
+/**
+ * A resolution describes one Focus. Rendering it against a different Focus is
+ * exactly the stale-surface bug, so a mismatch is treated as "not resolved
+ * yet" instead of painting the previous focus's surface.
+ */
+export function resolutionMatchesFocus(resolved, focus) {
+  if (!resolved || !focus) return false;
+  return resolved.kind === focus.kind && resolved.mode === focus.mode;
+}
+
 function renderSurface(session, current, view) {
   if (!current) {
     return (
@@ -325,6 +337,18 @@ function renderSurface(session, current, view) {
       (lastError === ""
         ? stateBlock("disabled", "未解析焦点")
         : stateBlock("error", "请求失败", lastError))
+    );
+  }
+
+  if (!resolutionMatchesFocus(view, current)) {
+    const pending =
+      `<header class="ws-surface-head"><h2>工作面</h2></header>` +
+      stateBlock("loading", "加载中");
+    if (lastError === "") return pending;
+    return (
+      `<header class="ws-surface-head"><h2>工作面</h2></header>` +
+      stateBlock("error", "请求失败", lastError) +
+      `<button type="button" class="ws-button" data-ws-action="retry" title="重试解析">重试</button>`
     );
   }
 
@@ -336,17 +360,9 @@ function renderSurface(session, current, view) {
     `<h2>${escapeText(renderer.label)}</h2>` +
     `<div class="ws-facts">` +
     chip(`模式：${modeLabel(current.mode)}`) +
-    chip(`镜头：${lensLabel(current.lens)}`) +
+    chip(`镜头：${lensLabel(currentLens(session))}`) +
     `</div>` +
     `</header>`;
-
-  if (lastError !== "" && !view) {
-    return (
-      head +
-      stateBlock("error", "请求失败", lastError) +
-      `<button type="button" class="ws-button" data-ws-action="retry" title="重试解析">重试</button>`
-    );
-  }
 
   return head + renderer.render(session, current);
 }
@@ -393,7 +409,7 @@ export function renderShell(root, sessionState, resolved) {
   const view = resolved || null;
 
   const lensRail = root.querySelector('[data-region="lens-rail"]');
-  if (lensRail) lensRail.innerHTML = renderLensRail(sessionState, current);
+  if (lensRail) lensRail.innerHTML = renderLensRail(sessionState);
 
   const focusBar = root.querySelector('[data-region="focus-bar"]');
   if (focusBar) focusBar.innerHTML = renderFocusBar(sessionState, current, view);
@@ -499,12 +515,14 @@ async function resolveKind(kind, mode, options) {
     resolution = answer;
     lastError = "";
     state = applyResolution(state, answer);
+    // The contract's default Lens seeds the session once; navigation and
+    // Back never move a Lens the author has chosen (Spec 3.3).
+    state = initialiseLens(state, answer.defaultLens);
     if (!options || options.navigate !== false) {
       state = navigate(state, {
         kind: answer.kind,
         id: answer.kind === "novel" ? identity.novelId : "",
         mode: answer.mode,
-        lens: answer.defaultLens,
       });
     }
     setStatus("success", "已解析");
@@ -515,14 +533,18 @@ async function resolveKind(kind, mode, options) {
   render();
 }
 
-async function changeLens(lens) {
+/** Re-asks the server about the current focus, keeping the visible surface. */
+async function refreshResolution() {
   const focus = currentFocus(state);
-  state = setLens(state, lens);
-  render();
-  if (!focus) return;
-
+  if (!focus) {
+    render();
+    return;
+  }
   const identity = readIdentity();
-  if (identity.novelId.length === 0) return;
+  if (identity.novelId.length === 0) {
+    render();
+    return;
+  }
 
   try {
     const answer = await client.resolveFocus({
@@ -535,18 +557,57 @@ async function changeLens(lens) {
     lastError = "";
     state = applyResolution(state, answer);
     if (focus.mode !== answer.mode) {
+      // The server owns Mode compatibility; the entry follows the answer.
       state = navigate(state, {
         kind: answer.kind,
         id: focus.id,
         mode: answer.mode,
-        lens: lens,
       });
     }
+    setStatus("success", "已解析");
   } catch (error) {
     lastError = error && error.message ? error.message : "解析失败";
     setStatus("error", lastError);
   }
   render();
+}
+
+/**
+ * Resolves the focus that navigation just restored. The previous focus's
+ * resolution is dropped first, so the working surface can never be painted
+ * from a resolution that belongs to a different focus.
+ */
+async function resolveCurrentFocus() {
+  if (!currentFocus(state)) {
+    render();
+    return;
+  }
+  resolution = null;
+  lastError = "";
+  setStatus("loading", "解析中");
+  render();
+  await refreshResolution();
+}
+
+async function changeLens(lens) {
+  state = setLens(state, lens);
+  render();
+  if (!currentFocus(state)) return;
+  await refreshResolution();
+}
+
+function focusKeyOf(focus) {
+  return focus === null || focus === undefined ? "" : focus.key;
+}
+
+/** Re-resolves whenever navigation landed on a different focus. */
+async function afterFocusChange(previousKey) {
+  const focus = currentFocus(state);
+  if (!focus || focus.key === previousKey) {
+    render();
+    return;
+  }
+  await resolveCurrentFocus();
 }
 
 function zoomBy(direction) {
@@ -608,10 +669,7 @@ function showWorkspace() {
 }
 
 function retry() {
-  const focus = currentFocus(state);
-  resolveKind(focus ? focus.kind : "novel", focus ? focus.mode : undefined, {
-    navigate: false,
-  });
+  resolveCurrentFocus();
 }
 
 function handleClick(event) {
@@ -624,13 +682,15 @@ function handleClick(event) {
     return;
   }
   if (action === "back") {
+    const previousKey = focusKeyOf(currentFocus(state));
     state = goBack(state);
-    render();
+    afterFocusChange(previousKey);
     return;
   }
   if (action === "breadcrumb") {
+    const previousKey = focusKeyOf(currentFocus(state));
     state = focusToIndex(state, Number(trigger.getAttribute("data-ws-index")));
-    render();
+    afterFocusChange(previousKey);
     return;
   }
   if (action === "zoom-in") {
