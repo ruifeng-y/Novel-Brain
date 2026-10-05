@@ -340,7 +340,7 @@ shown as co-primary.
 | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
 | 1 | Workspace Shell + Navigation | Identity Bar, Lens Rail | last session Focus, else Novel | per object | none (frame) | none | Lens switch, Search, Command, Pin, Focus stack | overlay only | defines resolution for all others |
 | 2 | Structure / Scene Write | Structure Lens | Novel, Arc, Chapter, or Scene | Write on Scene | manuscript editor | Context / Candidates / Validation / Dependencies | edit span, create candidate, request generation, open analysis | scene-local findings surface as badges | zoom in to Span, zoom out to Chapter |
-| 3 | Proposal / Adoption / Validation / Commit | Proposal or Candidate entry | Candidate or Change Set Revision | Review | compare and diff | Evidence / Impact / Validation / Gate | adopt, edit, reject, regenerate, revalidate, commit | gate blockers appear as attention items | commit opens the Commit object; commit detail is never replaced by the candidate surface |
+| 3 | Proposal / Adoption / Validation / Commit | Proposal or Candidate entry | Candidate or Change Set Revision | Review | compare and diff | Evidence / Impact / Validation / Gate | Candidate: adopt / edit / reject / regenerate; Change Set Revision: revalidate / review gate / commit | gate blockers appear as attention items | commit is available only from a Change Set Revision focus and opens the Commit object; the candidate surface never becomes commit detail |
 | 4 | Story Foundation | Identity Bar, Semantic Lens | Story Foundation | Design | five-direction skeleton + proposals | Proposals / Proposal Open Questions | choose entry mode, create proposal, explore, adopt partially | proposal open questions surface non-blocking | proposal opens into subdomain 3 |
 | 5 | Process Center | Process Lens or Identity Bar | Process | Explore | Process Center | Run Plan / Progress / Checkpoints / Failures / Usage | plan, approve plan, start, pause, resume, cancel, retry, decide checkpoint | failures and human checkpoints surface as attention items | a checkpoint may emit a Focus transition into subdomain 3 |
 | 6 | Narrative State | Temporal Lens, Position Scrubber | Novel or Story Position | Explore or Analyze | state at position | Canon / Plan / State / Derived layers | navigate position, pin object, open owning object | stale or conflicting state surfaces as attention | aligning a state to a Scene moves Focus, never rewrites state |
@@ -527,6 +527,22 @@ panels    Generation Provenance / Impact Evidence / Validation Evidence
 actions   adopt, edit, reject, regenerate
 ```
 
+Candidate Review is not Commit Review.
+
+```text
+Candidate              adopt / edit / reject / regenerate
+Change Set Revision    revalidate / review gate / commit
+```
+
+A commit action is available only when the Focus resolves to a Change Set Revision, and it is
+evaluated against the Commit Gate for that revision. A Candidate never owns a commit action, because a
+Candidate is not the Validation target, is not the Approval target, and is not the Commit target. The
+only path from a Candidate to Canon is:
+
+```text
+Candidate -> Adoption -> Change Set -> Change Set Revision -> Validation -> Approval -> Commit Gate -> NarrativeCommit
+```
+
 ### 11.2 Compare
 
 ```text
@@ -567,6 +583,10 @@ Introducing or changing mandatory validation
 ```
 
 ### 11.5 Commit Gate Presentation
+
+Commit Gate evaluation belongs to a Change Set Revision, never to a Candidate. This surface is reached
+only when the Focus resolves to a Change Set Revision; Candidate Review is not Commit Review, and no
+code path may evaluate a gate or commit against a Candidate.
 
 Before commit the interface shows what will be committed, which typed target, and the current status of
 each Commit Gate condition, presented independently:
