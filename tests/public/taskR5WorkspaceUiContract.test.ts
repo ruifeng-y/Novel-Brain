@@ -117,3 +117,52 @@ describe("[task:R5] [regression] workspace shell remains framework-free and self
     expect(markup.toLowerCase()).not.toContain("shortcut");
   });
 });
+
+describe("[task:R5] [cross-system] foundation browser surface sends frozen foundation commands", () => {
+  it("offers idea, existing_text, and blank modes and never labels blank as a proposal", () => {
+    const source = publicFile("app.js");
+
+    expect(source).toContain('data-mode="idea"');
+    expect(source).toContain('data-mode="existing_text"');
+    expect(source).toContain('data-mode="blank"');
+    expect(source).toContain("Empty narrative state");
+    expect(source).toContain("Create empty state");
+    expect(source).not.toContain("Start proposal");
+  });
+
+  it("attaches generation options for idea and existing_text only", () => {
+    const source = publicFile("app.js");
+
+    expect(source).toMatch(/agentRole:\s*"planner"/);
+    expect(source).toContain("modelPolicy");
+    expect(source).toContain("basedOnVersionSet");
+    expect(source).toContain('aggregateType: "Novel"');
+    expect(source).toContain('revisionId: "rev-1"');
+    expect(source).toMatch(/mode === "blank"/);
+    expect(source).toContain("payload.idea = content");
+    expect(source).toContain("payload.text = content");
+  });
+
+  it("reports proposal_created and empty_narrative_state outcomes distinctly", () => {
+    const source = publicFile("app.js");
+
+    expect(source).toContain('result.status === "proposal_created"');
+    expect(source).toContain("empty_narrative_state");
+  });
+
+  it("advances proposal workflow stages through the transitions route", () => {
+    const source = publicFile("app.js");
+
+    expect(source).toContain("/transitions");
+    expect(source).toContain('"frame"');
+    expect(source).toContain('"refine"');
+    expect(source).toContain('kind: "add_open_question"');
+  });
+
+  it("never issues a commit call from the workspace surface", () => {
+    const source = publicFile("app.js");
+
+    expect(source).not.toContain("/change-sets/");
+    expect(source).not.toMatch(/data-action="commit"/);
+  });
+});

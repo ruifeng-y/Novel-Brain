@@ -14,7 +14,11 @@
     authorId: "",
     runId: "",
     activeView: "overview",
+    foundationMode: "idea",
+    foundationResult: undefined,
   };
+
+  var STAGE_ORDER = ["frame", "explore", "deepen", "refine"];
 
   var STATE_MARKUP = {
     loading:
@@ -217,23 +221,137 @@
   }
 
   /* Foundation */
+  var FOUNDATION_STATUS_LABELS = {
+    proposal_created: "Proposal created",
+    empty_narrative_state: "Empty narrative state",
+  };
+
+  function stageFor(proposalId) {
+    try {
+      var saved = localStorage.getItem("novel-brain.stage." + proposalId);
+      if (saved && STAGE_ORDER.indexOf(saved) >= 0) return saved;
+    } catch (error) {
+      return "frame";
+    }
+    return "frame";
+  }
+
+  function saveStage(proposalId, stage) {
+    try {
+      localStorage.setItem("novel-brain.stage." + proposalId, stage);
+    } catch (error) {
+      return;
+    }
+  }
+
+  function nextStage(stage) {
+    var index = STAGE_ORDER.indexOf(stage);
+    return index >= 0 && index < STAGE_ORDER.length - 1 ? STAGE_ORDER[index + 1] : undefined;
+  }
+
+  function foundationControlsMarkup() {
+    return (
+      '<div class="segmented" role="group" aria-label="Foundation mode">' +
+      '<button type="button" class="segmented-item" data-mode="idea" data-action="set-foundation-mode" title="Idea">Idea</button>' +
+      '<button type="button" class="segmented-item" data-mode="existing_text" data-action="set-foundation-mode" title="Existing text">Existing text</button>' +
+      '<button type="button" class="segmented-item" data-mode="blank" data-action="set-foundation-mode" title="Blank">Blank</button>' +
+      "</div>" +
+      '<div class="form-field" data-role="foundation-input"></div>' +
+      '<button type="button" class="button" data-action="create-foundation" title="Create proposal" disabled>Create proposal</button>'
+    );
+  }
+
+  function foundationInputMarkup() {
+    if (appState.foundationMode === "idea") {
+      return (
+        '<label for="foundation-idea">Idea</label>' +
+        '<textarea id="foundation-idea" name="idea" rows="2" spellcheck="false"></textarea>'
+      );
+    }
+    if (appState.foundationMode === "existing_text") {
+      return (
+        '<label for="foundation-text">Existing text</label>' +
+        '<textarea id="foundation-text" name="text" rows="2" spellcheck="false"></textarea>'
+      );
+    }
+    return '<p class="inline-empty">Empty narrative state</p>';
+  }
+
+  function renderFoundationForm() {
+    var surface = surfaceFor("foundation");
+    if (!surface) return;
+    var buttons = surface.querySelectorAll("[data-mode]");
+    for (var index = 0; index < buttons.length; index += 1) {
+      var active = buttons[index].getAttribute("data-mode") === appState.foundationMode;
+      buttons[index].classList.toggle("is-active", active);
+      buttons[index].setAttribute("aria-pressed", active ? "true" : "false");
+    }
+    var input = surface.querySelector('[data-role="foundation-input"]');
+    if (input) input.innerHTML = foundationInputMarkup();
+    var submit = surface.querySelector('[data-action="create-foundation"]');
+    if (submit) {
+      var label = appState.foundationMode === "blank" ? "Create empty state" : "Create proposal";
+      submit.textContent = label;
+      submit.setAttribute("title", label);
+    }
+    syncFoundationSubmit();
+  }
+
+  function syncFoundationSubmit() {
+    var surface = surfaceFor("foundation");
+    if (!surface) return;
+    var submit = surface.querySelector('[data-action="create-foundation"]');
+    if (!submit) return;
+    var ready = Boolean(appState.novelId);
+    if (appState.foundationMode === "idea") {
+      var ideaField = byId("foundation-idea");
+      ready = ready && Boolean(ideaField && ideaField.value.trim());
+    } else if (appState.foundationMode === "existing_text") {
+      var existingField = byId("foundation-text");
+      ready = ready && Boolean(existingField && existingField.value.trim());
+    }
+    submit.disabled = !ready;
+  }
+
+  function foundationEntryPayload(mode, content) {
+    var payload = {
+      entryId: newId("entry"),
+      novelId: appState.novelId,
+      proposalId: newId("proposal"),
+      mode: mode,
+    };
+    if (mode === "blank") return payload;
+    if (mode === "idea") {
+      payload.idea = content;
+    } else {
+      payload.text = content;
+    }
+    payload.generation = {
+      taskId: newId("generation-task"),
+      agentRole: "planner",
+      modelPolicy: { provider: "deterministic", model: "foundation-reference", maxOutputTokens: 512 },
+      basedOnVersionSet: {
+        novel: { aggregateType: "Novel", objectId: appState.novelId, revisionId: "rev-1" },
+      },
+    };
+    return payload;
+  }
+
   function loadFoundation() {
-    var outcome = mountSurface("foundation", "");
+    var outcome = mountSurface("foundation", foundationControlsMarkup());
+    if (!outcome) return;
+    renderFoundationForm();
     if (!requireNovel(outcome)) return;
     renderState(outcome, "loading");
     api("/workspace/" + encodeURIComponent(appState.novelId) + "?object=story-foundation")
       .then(function (view) {
         var proposal = view.proposal || {};
         var proposals = Array.isArray(proposal.proposals) ? proposal.proposals : [];
-        var openQuestions = Array.isArray(proposal.openQuestions)
-          ? proposal.openQuestions
-          : [];
+        var openQuestions = Array.isArray(proposal.openQuestions) ? proposal.openQuestions : [];
         if (proposals.length === 0) {
           renderState(outcome, "empty", {
             label: "No proposals",
             detail: "No Narrative Proposal exists for this Novel.",
-            actions:
-              '<button type="button" class="button" data-action="start-blank-proposal" title="Start blank proposal">Start proposal</button>',
           });
         } else {
           renderState(outcome, "success", {
@@ -249,23 +367,11 @@
 
   function foundationMarkup(proposals, openQuestions) {
     return (
+      foundationResultMarkup() +
       '<div class="panel"><h3 class="panel-title">Proposals</h3>' +
-      listOrEmpty(
-        proposals,
-        function (proposal) {
-          return (
-            '<li><span class="item-main">' +
-            escapeHtml(proposal.id) +
-            '<span class="item-meta">' +
-            escapeHtml(proposal.stage || "") +
-            " / " +
-            escapeHtml(proposal.currentRevisionId || "") +
-            "</span></span></li>"
-          );
-        },
-        "No proposals",
-      ) +
-      "</div>" +
+      '<ul class="item-list">' +
+      proposals.map(proposalItemMarkup).join("") +
+      "</ul></div>" +
       '<div class="panel"><h3 class="panel-title">Open questions</h3>' +
       listOrEmpty(
         openQuestions,
@@ -279,31 +385,115 @@
         },
         "No open questions",
       ) +
-      "</div>" +
-      '<div class="panel"><h3 class="panel-title">Blank proposal</h3>' +
-      '<div class="form-row"><button type="button" class="button" data-action="start-blank-proposal" title="Start blank proposal">Start proposal</button></div>' +
       "</div>"
     );
   }
 
-  function startBlankProposal() {
-    var outcome = mountSurface("foundation", "");
+  function proposalItemMarkup(proposal) {
+    var stage = stageFor(proposal.id);
+    var next = nextStage(stage);
+    var actions = next
+      ? '<input class="inline-input" type="text" data-role="question" data-proposal-id="' +
+        escapeHtml(proposal.id) +
+        '" aria-label="Open question" title="Open question" />' +
+        '<button type="button" class="button" data-action="advance-proposal" data-proposal-id="' +
+        escapeHtml(proposal.id) +
+        '" data-from="' +
+        escapeHtml(stage) +
+        '" data-to="' +
+        escapeHtml(next) +
+        '" title="Advance to ' +
+        escapeHtml(next) +
+        '" disabled>Advance to ' +
+        escapeHtml(next) +
+        "</button>"
+      : '<span class="boundary-badge">' + escapeHtml(stage) + "</span>";
+    return (
+      '<li><span class="item-main">' +
+      escapeHtml(proposal.id) +
+      '<span class="item-meta">' +
+      escapeHtml(stage) +
+      " / " +
+      escapeHtml(proposal.currentRevisionId || "") +
+      "</span></span>" +
+      '<span class="item-actions">' +
+      actions +
+      "</span></li>"
+    );
+  }
+
+  function foundationResultMarkup() {
+    var result = appState.foundationResult;
+    if (!result) return "";
+    var created = result.status === "proposal_created";
+    var label = FOUNDATION_STATUS_LABELS[result.status] || result.status;
+    return (
+      '<div class="panel"><h3 class="panel-title">Last entry</h3><dl class="data-grid">' +
+      row("Status", text(result.status)) +
+      row("Outcome", text(label)) +
+      row("Mode", text(result.mode)) +
+      (created ? row("Proposal", code(result.proposalId)) : "") +
+      row("Automatic commit", text(String(result.automaticCommit))) +
+      "</dl></div>"
+    );
+  }
+
+  function createFoundationEntry() {
+    var outcome = mountSurface("foundation", foundationControlsMarkup());
     if (!appState.novelId) {
       if (outcome) requireNovel(outcome);
       return;
     }
+    var mode = appState.foundationMode;
+    var content = "";
+    if (mode === "idea") {
+      var ideaField = byId("foundation-idea");
+      content = ideaField ? ideaField.value.trim() : "";
+    } else if (mode === "existing_text") {
+      var existingField = byId("foundation-text");
+      content = existingField ? existingField.value.trim() : "";
+    }
+    if (mode !== "blank" && !content) return;
+    appState.foundationResult = undefined;
     if (outcome) renderState(outcome, "loading");
-    api("/foundation/entries", {
-      method: "POST",
-      body: {
-        entryId: newId("entry"),
-        novelId: appState.novelId,
-        proposalId: newId("proposal"),
-        mode: "blank",
+    api("/foundation/entries", { method: "POST", body: foundationEntryPayload(mode, content) })
+      .then(function (result) {
+        appState.foundationResult = result;
+        setContextStatus("success", FOUNDATION_STATUS_LABELS[result.status] || result.status);
+        loadFoundation();
+      })
+      .catch(function (error) {
+        showError(outcome, error);
+      });
+  }
+
+  function advanceProposal(trigger) {
+    var proposalId = trigger.getAttribute("data-proposal-id");
+    var from = trigger.getAttribute("data-from");
+    var to = trigger.getAttribute("data-to");
+    var container = trigger.closest(".item-actions");
+    var questionField = container ? container.querySelector('[data-role="question"]') : null;
+    var questionText = questionField ? questionField.value.trim() : "";
+    if (!proposalId || !from || !to || !questionText) return;
+    var outcome = mountSurface("foundation", foundationControlsMarkup());
+    if (outcome) renderState(outcome, "loading");
+    api(
+      "/foundation/proposals/" + encodeURIComponent(proposalId) + "/transitions",
+      {
+        method: "POST",
+        body: {
+          from: from,
+          to: to,
+          actor: "author",
+          changes: [
+            { kind: "add_open_question", question: { id: newId("question"), text: questionText } },
+          ],
+        },
       },
-    })
-      .then(function () {
-        setContextStatus("success", "Proposal started");
+    )
+      .then(function (result) {
+        saveStage(proposalId, result.stage || to);
+        setContextStatus("success", "Stage advanced");
         loadFoundation();
       })
       .catch(function (error) {
@@ -524,8 +714,17 @@
       loadView(owner ? owner.getAttribute("data-view") : appState.activeView);
       return;
     }
-    if (action === "start-blank-proposal") {
-      startBlankProposal();
+    if (action === "set-foundation-mode") {
+      appState.foundationMode = trigger.getAttribute("data-mode");
+      renderFoundationForm();
+      return;
+    }
+    if (action === "create-foundation") {
+      createFoundationEntry();
+      return;
+    }
+    if (action === "advance-proposal") {
+      advanceProposal(trigger);
       return;
     }
     if (action === "load-run") {
@@ -570,6 +769,20 @@
         setContextStatus("success", "Identity saved");
         loadView(appState.activeView);
       });
+    });
+
+    document.addEventListener("input", function (event) {
+      var target = event.target;
+      if (!target || typeof target.id !== "string") return;
+      if (target.id === "foundation-idea" || target.id === "foundation-text") {
+        syncFoundationSubmit();
+        return;
+      }
+      if (target.getAttribute && target.getAttribute("data-role") === "question") {
+        var container = target.closest(".item-actions");
+        var button = container ? container.querySelector('[data-action="advance-proposal"]') : null;
+        if (button) button.disabled = target.value.trim().length === 0;
+      }
     });
 
     showView(appState.activeView);
