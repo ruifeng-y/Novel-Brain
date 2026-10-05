@@ -1,7 +1,8 @@
 import { spawnSync } from "node:child_process";
 import { readdirSync } from "node:fs";
 import { fileURLToPath } from "node:url";
-import { createInMemoryEngineServer } from "../src/app/composition.ts";
+import { PrismaClient } from "@prisma/client";
+import { createPrismaEngineServer } from "../src/app/prismaComposition.ts";
 import {
   createProductionProcessBootstrap,
   type ProductionProcessBootstrap,
@@ -28,27 +29,38 @@ interface RoleProcessController extends DeploymentProcessController {
   checks(): Promise<Readonly<Record<string, DeploymentHealthStatus>>>;
 }
 
-type EngineServer = ReturnType<typeof createInMemoryEngineServer>;
+type PrismaEngineServer = ReturnType<typeof createPrismaEngineServer>;
 
 function createApplicationProcessController(
   role: DeploymentProcessRole,
   configuration: ProductionConfiguration,
 ): RoleProcessController {
-  let server: EngineServer | undefined;
+  let server: PrismaEngineServer | undefined;
+  let prisma: PrismaClient | undefined;
   const healthy = () => server !== undefined && server.server.listening;
   return {
     async start(process: DeploymentProcess) {
       if (process !== role) return;
       if (server !== undefined) throw new Error("application process is already running");
-      const created = createInMemoryEngineServer();
-      await created.listen({ port: configuration.applicationPort, host: "0.0.0.0" });
+      const client = new PrismaClient();
+      const created = createPrismaEngineServer(client);
+      try {
+        await created.listen({ port: configuration.applicationPort, host: "0.0.0.0" });
+      } catch (error) {
+        await client.$disconnect();
+        throw error;
+      }
+      prisma = client;
       server = created;
     },
     async stop(process: DeploymentProcess, _signal: DeploymentSignal) {
       if (process !== role || server === undefined) return;
       const running = server;
+      const client = prisma;
       server = undefined;
+      prisma = undefined;
       await running.close();
+      if (client !== undefined) await client.$disconnect();
     },
     async liveness() {
       return healthy() ? "healthy" : "unhealthy";
