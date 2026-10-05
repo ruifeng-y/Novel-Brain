@@ -9,6 +9,20 @@
 
   var VIEWS = ["overview", "foundation", "run", "recall"];
 
+  function emptyRunChain() {
+    return {
+      sceneId: "",
+      sceneRevisionId: "",
+      sceneTitle: "",
+      chapterId: "",
+      intent: "",
+      planGoal: "",
+      generationTaskId: "",
+      planRevisionId: "",
+      approvalId: "",
+    };
+  }
+
   var appState = {
     novelId: "",
     authorId: "",
@@ -17,14 +31,7 @@
     foundationMode: "idea",
     foundationResult: undefined,
     recallItems: [],
-    runChain: {
-      sceneId: "",
-      intent: "",
-      planGoal: "",
-      generationTaskId: "",
-      planRevisionId: "",
-      approvalId: "",
-    },
+    runChain: emptyRunChain(),
   };
 
   var STAGE_ORDER = ["frame", "explore", "deepen", "refine"];
@@ -114,6 +121,13 @@
     return surface.querySelector('[data-role="outcome"]');
   }
 
+  function remountSurface(view) {
+    var surface = surfaceFor(view);
+    if (!surface) return;
+    surface.innerHTML = "";
+    surface.dataset.mounted = "false";
+  }
+
   function renderState(outcome, state, options) {
     var config = options || {};
     if (!outcome) return null;
@@ -185,6 +199,44 @@
       return '<p class="inline-empty">' + escapeHtml(emptyLabel) + "</p>";
     }
     return '<ul class="item-list">' + items.map(renderItem).join("") + "</ul>";
+  }
+
+  /* Workspace bootstrap */
+  function createNovel() {
+    var authorField = byId("author-id");
+    var titleField = byId("novel-title");
+    var authorId = authorField ? authorField.value.trim() : appState.authorId;
+    var title = titleField ? titleField.value.trim() : "";
+    if (!authorId) {
+      setContextStatus("disabled", "请先填写作者 ID");
+      return;
+    }
+    if (!title) {
+      setContextStatus("disabled", "请先填写书名");
+      return;
+    }
+    var requestedId = newId("novel");
+    setContextStatus("loading", "正在创建小说");
+    api("/novels", {
+      method: "POST",
+      body: { id: requestedId, authorId: authorId, title: title },
+    })
+      .then(function (novel) {
+        var createdId = novel && novel.id ? novel.id : requestedId;
+        appState.novelId = createdId;
+        if (byId("novel-id")) byId("novel-id").value = createdId;
+        if (titleField) titleField.value = "";
+        // A brand-new Novel cannot continue the previous Run chain.
+        appState.runChain = emptyRunChain();
+        saveRunId("");
+        remountSurface("run");
+        persistIdentity();
+        setContextStatus("success", "小说已创建");
+        loadView(appState.activeView);
+      })
+      .catch(function (error) {
+        setContextStatus("error", error && error.message ? error.message : "创建小说失败");
+      });
   }
 
   /* Overview */
@@ -528,10 +580,19 @@
     var chain = appState.runChain;
     var value = appState.runId ? ' value="' + escapeHtml(appState.runId) + '"' : "";
     return (
+      '<div class="form-field"><label for="run-scene-title">场景标题</label>' +
+      '<input id="run-scene-title" name="sceneTitle" type="text" autocomplete="off" spellcheck="false"' +
+      (chain.sceneTitle ? ' value="' + escapeHtml(chain.sceneTitle) + '"' : "") +
+      " /></div>" +
+      '<div class="form-field"><label for="run-chapter-id">章节 ID</label>' +
+      '<input id="run-chapter-id" name="chapterId" type="text" autocomplete="off" spellcheck="false"' +
+      (chain.chapterId ? ' value="' + escapeHtml(chain.chapterId) + '"' : "") +
+      " /></div>" +
       '<div class="form-field"><label for="run-scene-id">场景 ID</label>' +
       '<input id="run-scene-id" name="sceneId" type="text" autocomplete="off" spellcheck="false"' +
       (chain.sceneId ? ' value="' + escapeHtml(chain.sceneId) + '"' : "") +
       " /></div>" +
+      '<button type="button" class="button" data-action="create-scene" title="创建场景">创建场景</button>' +
       '<div class="form-field"><label for="run-intent">生成意图</label>' +
       '<input id="run-intent" name="intent" type="text" autocomplete="off" spellcheck="false"' +
       (chain.intent ? ' value="' + escapeHtml(chain.intent) + '"' : "") +
@@ -556,6 +617,8 @@
     var chain = appState.runChain;
     return (
       '<div class="panel"><h3 class="panel-title">创建链路</h3><dl class="data-grid">' +
+      row("场景", chain.sceneId ? code(chain.sceneId) : text("未创建")) +
+      row("场景修订", chain.sceneRevisionId ? code(chain.sceneRevisionId) : text("未创建")) +
       row("生成任务", chain.generationTaskId ? code(chain.generationTaskId) : text("未创建")) +
       row("计划修订", chain.planRevisionId ? code(chain.planRevisionId) : text("未创建")) +
       row("计划批准", chain.approvalId ? code(chain.approvalId) : text("未批准")) +
@@ -575,7 +638,7 @@
     }
     if (!appState.runId) {
       var chain = appState.runChain;
-      if (!chain.generationTaskId && !chain.planRevisionId && !chain.approvalId) {
+      if (!chain.sceneId && !chain.generationTaskId && !chain.planRevisionId && !chain.approvalId) {
         renderState(outcome, "empty", {
           label: "尚无生产运行",
           detail: "先创建生成任务与计划修订，批准后即可启动生产运行。",
@@ -596,12 +659,59 @@
       });
   }
 
+  function createScene() {
+    var outcome = mountSurface("run", runControlsMarkup());
+    var titleField = byId("run-scene-title");
+    var chapterField = byId("run-chapter-id");
+    var sceneField = byId("run-scene-id");
+    var title = titleField ? titleField.value.trim() : "";
+    var chapterId = chapterField ? chapterField.value.trim() : "";
+    var typedSceneId = sceneField ? sceneField.value.trim() : "";
+    var chain = appState.runChain;
+    if (!appState.novelId) {
+      renderState(outcome, "disabled", {
+        label: "需要小说 ID",
+        detail: "请先创建或设置小说 ID。",
+      });
+      return;
+    }
+    if (!chapterId || !title) {
+      renderState(outcome, "disabled", {
+        label: "需要章节与场景标题",
+        detail: "请填写章节 ID 与场景标题。",
+      });
+      return;
+    }
+    var sceneId = typedSceneId || newId("scene");
+    chain.sceneTitle = title;
+    chain.chapterId = chapterId;
+    if (outcome) renderState(outcome, "loading");
+    api("/novels/" + encodeURIComponent(appState.novelId) + "/scenes", {
+      method: "POST",
+      body: { id: sceneId, chapterId: chapterId, title: title },
+    })
+      .then(function (scene) {
+        var createdSceneId = scene && scene.id ? scene.id : sceneId;
+        var createdRevisionId =
+          scene && scene.currentRevisionId ? scene.currentRevisionId : "";
+        chain.sceneId = createdSceneId;
+        chain.sceneRevisionId = createdRevisionId;
+        if (byId("run-scene-id")) byId("run-scene-id").value = createdSceneId;
+        setContextStatus("success", "场景已创建");
+        loadRun();
+      })
+      .catch(function (error) {
+        showError(outcome, error);
+      });
+  }
+
   function createGenerationTask() {
     var outcome = mountSurface("run", runControlsMarkup());
     var sceneField = byId("run-scene-id");
     var intentField = byId("run-intent");
     var sceneId = sceneField ? sceneField.value.trim() : "";
     var intent = intentField ? intentField.value.trim() : "";
+    var chain = appState.runChain;
     if (!appState.novelId || !sceneId || !intent) {
       renderState(outcome, "disabled", {
         label: "需要小说、场景与意图",
@@ -609,8 +719,14 @@
       });
       return;
     }
-    appState.runChain.sceneId = sceneId;
-    appState.runChain.intent = intent;
+    if (!chain.sceneRevisionId || chain.sceneId !== sceneId) {
+      renderState(outcome, "disabled", {
+        label: "需要先创建场景",
+        detail: "请先创建场景，生成任务将引用该场景返回的修订。",
+      });
+      return;
+    }
+    chain.intent = intent;
     if (outcome) renderState(outcome, "loading");
     api("/novels/" + encodeURIComponent(appState.novelId) + "/generation-tasks", {
       method: "POST",
@@ -619,10 +735,12 @@
         operation: "scene_generation",
         targetSceneId: sceneId,
         intent: intent,
-        // POST /novels/:novelId/scenes assigns the initial scene revision as
-        // `<sceneId>:rev-1`; the frozen API exposes no scene query surface.
         basedOnVersionSet: {
-          scene: { aggregateType: "Scene", objectId: sceneId, revisionId: sceneId + ":rev-1" },
+          scene: {
+            aggregateType: "Scene",
+            objectId: sceneId,
+            revisionId: chain.sceneRevisionId,
+          },
         },
       },
     })
@@ -1058,6 +1176,10 @@
       loadView(owner ? owner.getAttribute("data-view") : appState.activeView);
       return;
     }
+    if (action === "create-novel") {
+      createNovel();
+      return;
+    }
     if (action === "set-foundation-mode") {
       appState.foundationMode = trigger.getAttribute("data-mode");
       renderFoundationForm();
@@ -1075,6 +1197,10 @@
       var input = byId("run-id");
       saveRunId(input ? input.value : "");
       loadRun();
+      return;
+    }
+    if (action === "create-scene") {
+      createScene();
       return;
     }
     if (action === "create-generation-task") {
