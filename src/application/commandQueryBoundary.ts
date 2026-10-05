@@ -6,6 +6,7 @@ export const applicationCapabilities = [
   "run",
   "recall",
   "foundation",
+  "manuscript",
 ] as const;
 
 export type ApplicationCapability = (typeof applicationCapabilities)[number];
@@ -327,6 +328,41 @@ export const applicationCapabilityBoundaries = {
       {
         id: "foundation.query.proposal-comparison",
         capability: "foundation",
+        kind: "query",
+        effect: "read",
+        resultChannel: "query-result",
+      },
+    ],
+  },
+  manuscript: {
+    capability: "manuscript",
+    commands: [
+      {
+        id: "manuscript.command.create-arc",
+        capability: "manuscript",
+        kind: "command",
+        effect: "mutation",
+        resultChannel: "command-result",
+      },
+      {
+        id: "manuscript.command.create-chapter",
+        capability: "manuscript",
+        kind: "command",
+        effect: "mutation",
+        resultChannel: "command-result",
+      },
+      {
+        id: "manuscript.command.reorder-structure",
+        capability: "manuscript",
+        kind: "command",
+        effect: "mutation",
+        resultChannel: "command-result",
+      },
+    ],
+    queries: [
+      {
+        id: "manuscript.query.structural-navigation",
+        capability: "manuscript",
         kind: "query",
         effect: "read",
         resultChannel: "query-result",

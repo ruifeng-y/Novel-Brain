@@ -8,6 +8,8 @@ import {
   type ProductSurface,
 } from "../app/productSurfaceCommandService";
 import { createWorkspaceProductQueryService } from "../app/workspaceProductQueryService";
+import { createStructuralNavigationQuery } from "../app/structuralNavigationQuery";
+import { createStructureCommandService } from "../app/structureCommandService";
 import type { FoundationWorkspaceFocus } from "../story/application/foundationWorkspaceContract";
 import type { FoundationGenerationOptions } from "../story/application/foundationEntryService";
 import {
@@ -250,6 +252,10 @@ const routeContracts = {
   runStatus: "run.query.run-status",
   recallAttention: "recall.query.recall-attention",
   recordRecallDisposition: "recall.command.record-recall-disposition",
+  structuralNavigation: "manuscript.query.structural-navigation",
+  createArc: "manuscript.command.create-arc",
+  createChapter: "manuscript.command.create-chapter",
+  reorderStructure: "manuscript.command.reorder-structure",
 } as const;
 
 function headerValue(request: FastifyRequest, name: string): string | undefined {
@@ -347,6 +353,16 @@ export function registerNovelBrainRoutes(
     productDependencies === undefined
       ? undefined
       : createProductSurfaceCommandService(productDependencies);
+  const structuralNavigation = createStructuralNavigationQuery({
+    arcs: dependencies.arcs,
+    chapters: dependencies.chapters,
+    scenes: dependencies.scenes,
+  });
+  const structureCommands = createStructureCommandService({
+    arcs: dependencies.arcs,
+    chapters: dependencies.chapters,
+    scenes: dependencies.scenes,
+  });
 
   app.post("/novels", async (request, reply) => {
     const identity = novelBodyIdentitySchema.parse(request.body);
@@ -944,6 +960,107 @@ export function registerNovelBrainRoutes(
           ...(body.actionId === undefined ? {} : { actionId: body.actionId }),
         });
         return reply.code(201).send(record);
+      },
+    );
+  });
+
+  app.get("/novels/:novelId/structure", async (request, reply) => {
+    const novelId = requiredPathParameter(request, "novelId");
+    return pipeline.execute(
+      routeContracts.structuralNavigation,
+      routeBoundaryContext(request, novelId),
+      routeBoundaryInput(request),
+      async () => {
+        const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
+        const view = await structuralNavigation.getStructure(params.novelId);
+        return reply.code(200).send(view);
+      },
+    );
+  });
+
+  app.post("/novels/:novelId/arcs", async (request, reply) => {
+    const novelId = requiredPathParameter(request, "novelId");
+    return pipeline.execute(
+      routeContracts.createArc,
+      routeBoundaryContext(request, novelId),
+      routeBoundaryInput(request),
+      async () => {
+        const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
+        const body = z
+          .object({ id: z.string().min(1), title: z.string().min(1) })
+          .parse(request.body);
+        const arc = await structureCommands.createArc({
+          id: body.id,
+          novelId: params.novelId,
+          title: body.title,
+          createdAt: new Date(),
+        });
+        return reply.code(201).send(arc);
+      },
+    );
+  });
+
+  app.post("/novels/:novelId/chapters", async (request, reply) => {
+    const novelId = requiredPathParameter(request, "novelId");
+    return pipeline.execute(
+      routeContracts.createChapter,
+      routeBoundaryContext(request, novelId),
+      routeBoundaryInput(request),
+      async () => {
+        const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
+        const body = z
+          .object({ id: z.string().min(1), arcId: z.string().min(1), title: z.string().min(1) })
+          .parse(request.body);
+        const chapter = await structureCommands.createChapter({
+          id: body.id,
+          novelId: params.novelId,
+          arcId: body.arcId,
+          title: body.title,
+          createdAt: new Date(),
+        });
+        return reply.code(201).send(chapter);
+      },
+    );
+  });
+
+  app.post("/arcs/:arcId/chapter-order", async (request, reply) => {
+    const arcId = requiredPathParameter(request, "arcId");
+    const arc = await dependencies.arcs.findById(arcId);
+    if (!arc) return reply.code(404).send({ error: "Arc not found" });
+    return pipeline.execute(
+      routeContracts.reorderStructure,
+      routeBoundaryContext(request, arc.novelId),
+      routeBoundaryInput(request),
+      async () => {
+        const body = z
+          .object({ chapterIds: z.array(z.string().min(1)) })
+          .parse(request.body);
+        const updated = await structureCommands.reorderArcChapters({
+          arcId,
+          chapterIds: body.chapterIds,
+          updatedAt: new Date(),
+        });
+        return reply.code(200).send(updated);
+      },
+    );
+  });
+
+  app.post("/chapters/:chapterId/scene-order", async (request, reply) => {
+    const chapterId = requiredPathParameter(request, "chapterId");
+    const chapter = await dependencies.chapters.findById(chapterId);
+    if (!chapter) return reply.code(404).send({ error: "Chapter not found" });
+    return pipeline.execute(
+      routeContracts.reorderStructure,
+      routeBoundaryContext(request, chapter.novelId),
+      routeBoundaryInput(request),
+      async () => {
+        const body = z.object({ sceneIds: z.array(z.string().min(1)) }).parse(request.body);
+        const updated = await structureCommands.reorderChapterScenes({
+          chapterId,
+          sceneIds: body.sceneIds,
+          updatedAt: new Date(),
+        });
+        return reply.code(200).send(updated);
       },
     );
   });

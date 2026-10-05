@@ -75,6 +75,14 @@ const expectedOperationIds = {
       "foundation.query.proposal-comparison",
     ],
   },
+  manuscript: {
+    commands: [
+      "manuscript.command.create-arc",
+      "manuscript.command.create-chapter",
+      "manuscript.command.reorder-structure",
+    ],
+    queries: ["manuscript.query.structural-navigation"],
+  },
 } as const;
 
 function resolveImport(importer: string, specifier: string): string {
@@ -124,6 +132,7 @@ describe("[task:P2.1] command and query boundary contracts", () => {
       "run",
       "recall",
       "foundation",
+      "manuscript",
     ]);
 
     const actualOperationIds = Object.fromEntries(

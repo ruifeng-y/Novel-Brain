@@ -7,7 +7,10 @@ export interface StructureReconciliationIssue {
     | "arc_missing"
     | "chapter_missing"
     | "chapter_pointer_mismatch"
-    | "scene_pointer_mismatch";
+    | "scene_pointer_mismatch"
+    // Container direction: an ordered entry names an entity that does not exist.
+    | "arc_chapter_entry_missing"
+    | "chapter_scene_entry_missing";
   readonly objectId: string;
   readonly detail: string;
 }
