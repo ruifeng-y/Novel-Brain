@@ -22,6 +22,8 @@ import type { Novel } from "../narrative/novel/domain/novel";
 import { createNovel } from "../narrative/novel/domain/novel";
 import type { Scene } from "../manuscript/domain/scene";
 import { createScene } from "../manuscript/domain/scene";
+import type { Arc } from "../manuscript/domain/arc";
+import type { Chapter } from "../manuscript/domain/chapter";
 import type { GenerationTask } from "../production/domain/generationTask";
 import {
   createGenerationTask,
@@ -71,6 +73,8 @@ import { ResourceIsolationError } from "../platform/securityBoundary";
 export interface ApiDependencies {
   readonly novels: Repository<Novel>;
   readonly scenes: RevisionedRepository<Scene>;
+  readonly arcs: Repository<Arc>;
+  readonly chapters: Repository<Chapter>;
   readonly generationTasks: Repository<GenerationTask>;
   readonly candidates: RevisionedRepository<Candidate>;
   readonly canonicalFacts: RevisionedRepository<CanonicalFact>;

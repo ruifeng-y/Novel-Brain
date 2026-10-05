@@ -1,6 +1,8 @@
 import { InMemoryRepository, InMemoryRevisionedRepository } from "./inMemoryRepositories";
 import { InMemoryCommitTransaction } from "./inMemoryCommitTransaction";
 import type { Novel } from "../narrative/novel/domain/novel";
+import type { Arc } from "../manuscript/domain/arc";
+import type { Chapter } from "../manuscript/domain/chapter";
 import type { Candidate } from "../production/domain/candidate";
 import type { GenerationTask } from "../production/domain/generationTask";
 import { DeterministicRuntime } from "../production/runtime/deterministicRuntime";
@@ -18,6 +20,8 @@ export function createInMemoryEngineDependencies(): ApiDependencies {
   return {
     novels: commitTransaction.serializeRepository(new InMemoryRepository<Novel>()),
     scenes: commitTransaction.scenes,
+    arcs: new InMemoryRepository<Arc>(),
+    chapters: new InMemoryRepository<Chapter>(),
     generationTasks: commitTransaction.serializeRepository(new InMemoryRepository<GenerationTask>()),
     candidates: commitTransaction.serializeRevisionedRepository(new InMemoryRevisionedRepository<Candidate>()),
     canonicalFacts: commitTransaction.canonicalFacts,

@@ -13,6 +13,8 @@ import {
 } from "./prismaCommitTransaction";
 import type { Novel } from "../narrative/novel/domain/novel";
 import type { Scene } from "../manuscript/domain/scene";
+import type { Arc } from "../manuscript/domain/arc";
+import type { Chapter } from "../manuscript/domain/chapter";
 import type { GenerationTask } from "../production/domain/generationTask";
 import type { Candidate } from "../production/domain/candidate";
 import type { CanonicalFact } from "../narrative/canon/domain/canonicalFact";
@@ -31,6 +33,8 @@ import { createPrismaDependencyImpactPersistence } from "../dependency/applicati
  */
 const prismaEngineAggregateTypes = Object.freeze({
   novel: "Novel",
+  arc: "Arc",
+  chapter: "Chapter",
   generationTask: "GenerationTask",
   candidate: "Candidate",
 });
@@ -61,6 +65,13 @@ export function createPrismaEngineDependencies(prisma: PrismaClient): ApiDepende
     scenes: new PrismaRevisionedRepository<Scene>(
       prisma,
       prismaCommitAggregateTypes.scene,
+      revive,
+      codec,
+    ),
+    arcs: new PrismaRepository<Arc>(prisma, prismaEngineAggregateTypes.arc, revive, codec),
+    chapters: new PrismaRepository<Chapter>(
+      prisma,
+      prismaEngineAggregateTypes.chapter,
       revive,
       codec,
     ),
