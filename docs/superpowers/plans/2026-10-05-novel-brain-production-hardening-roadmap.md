@@ -58,3 +58,25 @@ Required behaviour: rejections that the frozen domains already signal must reach
 6. Malformed input continues to be 400; genuine unexpected failures stay 500.
 
 Do not change Domain error types' semantics; map them at the HTTP boundary only. Do not weaken any existing status mapping (`ZodError` -> 400, commit conflict -> 409 must keep working).
+
+---
+
+### Task C: Workspace Isolation Integrity
+
+**Why:** The boundary authorizes a resource identity the client supplies (`x-workspace-id`) while handlers act on the novel named in the path or body, so workspace isolation is bypassable.
+
+**Verified defect (controller, real process):** with a principal scoped to `map-novel-1`, `POST /foundation/entries` carrying `x-workspace-id: map-novel-1` and body `novelId: map-other` returned 201 and wrote into `map-other`; `GET /workspace/map-other` with the same header returned 200 and that data.
+
+**Root cause:** `routeWorkspaceId` in src/http/routes.ts prefers the client-supplied header, so the authorized resource and the acted-on resource are two different identities that are never cross-checked.
+
+**Files:**
+- Modify: `src/http/routes.ts`
+- Test: `tests/http/taskHardeningWorkspaceIsolationIntegrity.test.ts`
+
+**Required behaviour:**
+1. The authorization resource is derived SERVER-SIDE from the same identity the route handler acts on: the path parameter for scoped routes, the request body for creation routes, and the loaded entity for routes addressed by run/attempt/task/candidate/proposal id.
+2. `x-workspace-id` stops being authoritative. When present it is treated as a consistency assertion: if it disagrees with the server-derived identity the request is rejected with 403. When absent the request proceeds on the derived identity.
+3. No handler may write to, or read, a novel outside the workspace that was authorized for that same request.
+4. Static asset routes are unaffected (they never enter the pipeline).
+
+**Verification:** regression tests must cover, for both a read path and a write path, that header-vs-path mismatch is rejected 403, that the correct/absent header is allowed, and that a principal cannot reach another workspace's data. The existing per-route contract-id and pipeline assertions must keep passing.
