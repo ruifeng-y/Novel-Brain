@@ -3,11 +3,17 @@ import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "vitest";
 import { createInMemoryEngineDependencies } from "../../src/app/composition";
 import { createNovelBrainServer } from "../../src/http/server";
+import { createHttpBoundaryPipeline } from "../../src/http/httpBoundaryPipeline";
 import type { HttpBoundaryPipeline } from "../../src/http/httpBoundaryPipeline";
+import { createProductRequestValidators } from "../../src/http/productRequestSchemas";
+import { createPlatformObservabilityBoundary } from "../../src/platform/observabilityBoundary";
+import { createProductionSecurityBoundary } from "../../src/platform/productionSecurityProvider";
 
 const author = "author-bootstrap";
 const novelId = "novel-bootstrap";
 const sceneId = "scene-bootstrap";
+const scopedWorkspaceId = "boot-live-1";
+const productionAuthor = "boot-author";
 
 function publicFile(name: string): string {
   return readFileSync(fileURLToPath(new URL(`../../public/${name}`, import.meta.url)), "utf8");
@@ -25,6 +31,35 @@ function harness() {
     httpBoundaryPipeline: pipeline,
   });
   return { app, calls };
+}
+
+/** Real production security boundary: the principal is scoped to one workspace. */
+function secureHarness() {
+  const pipeline = createHttpBoundaryPipeline({
+    security: createProductionSecurityBoundary({
+      NB_SECURITY_PRINCIPALS: JSON.stringify([
+        {
+          token: productionAuthor,
+          subjectId: productionAuthor,
+          accountId: "account-1",
+          workspaceIds: [scopedWorkspaceId],
+          roles: ["author"],
+        },
+      ]),
+      NB_SECURITY_RATE_LIMIT: "50",
+      NB_SECURITY_SECRETS: "{}",
+    }),
+    observability: createPlatformObservabilityBoundary({
+      sink: () => {},
+      now: () => new Date(0),
+      idGenerator: () => "secure-harness-event",
+    }),
+    validators: createProductRequestValidators(),
+  });
+  const app = createNovelBrainServer(createInMemoryEngineDependencies(), {
+    httpBoundaryPipeline: pipeline,
+  });
+  return { app };
 }
 
 /** Slices a top-level function body out of app.js so assertions stay scoped. */
@@ -174,6 +209,25 @@ describe("[task:Hardening-A] [cross-system] workspace bootstrap surface", () => 
     expect(body).toContain("persistIdentity()");
   });
 
+  it("creates the Novel from the author-supplied id and binds the workspace header to it", () => {
+    const source = publicFile("app.js");
+    const createNovelBody = functionBody(source, "createNovel");
+
+    // The deployment pre-configures workspace scope, so the client must not
+    // invent an id the operator could never have provisioned.
+    expect(createNovelBody).not.toContain('newId("novel")');
+    expect(createNovelBody).toContain("workspaceId");
+
+    const apiBody = functionBody(source, "api");
+    expect(apiBody).toContain("x-workspace-id");
+
+    // Only the Novel creation overrides workspace scope; scoped paths keep
+    // deriving it from the route parameter.
+    for (const name of ["createScene", "createGenerationTask", "createRunPlan", "startRun"]) {
+      expect(functionBody(source, name)).not.toContain("workspaceId");
+    }
+  });
+
   it("backfills the created Scene id and revision from the Scene response", () => {
     const source = publicFile("app.js");
     const body = functionBody(source, "createScene");
@@ -221,5 +275,51 @@ describe("[task:Hardening-A] [regression] localized surface stays intact", () =>
     expect(source).not.toContain("location.href");
     expect(source).not.toContain("/change-sets/");
     expect(source).not.toMatch(/data-action="commit"/);
+  });
+});
+
+describe("[task:Hardening-A] [integration] create Novel under the real workspace isolation boundary", () => {
+  it("accepts the create when x-workspace-id matches the scoped workspace", async () => {
+    const { app } = secureHarness();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/novels",
+      headers: { "x-author-id": productionAuthor, "x-workspace-id": scopedWorkspaceId },
+      payload: { id: scopedWorkspaceId, authorId: productionAuthor, title: "作用域小说" },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json().id).toBe(scopedWorkspaceId);
+    expect(response.json().authorId).toBe(productionAuthor);
+  });
+
+  it("rejects the create when x-workspace-id is absent", async () => {
+    const { app } = secureHarness();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/novels",
+      headers: { "x-author-id": productionAuthor },
+      payload: { id: scopedWorkspaceId, authorId: productionAuthor, title: "作用域小说" },
+    });
+
+    expect(response.statusCode).not.toBe(201);
+    expect(response.statusCode).toBeGreaterThanOrEqual(400);
+    expect(response.json().message).toContain("is not scoped to workspace");
+  });
+
+  it("rejects the create when x-workspace-id falls outside the principal scope", async () => {
+    const { app } = secureHarness();
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/novels",
+      headers: { "x-author-id": productionAuthor, "x-workspace-id": "someone-else" },
+      payload: { id: "someone-else", authorId: productionAuthor, title: "作用域小说" },
+    });
+
+    expect(response.statusCode).not.toBe(201);
+    expect(response.json().message).toContain("is not scoped to workspace someone-else");
   });
 });

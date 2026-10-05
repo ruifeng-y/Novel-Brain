@@ -156,6 +156,9 @@
     var config = options || {};
     var headers = { accept: "application/json" };
     if (appState.authorId) headers["x-author-id"] = appState.authorId;
+    // Scoped routes derive the workspace from the path; only the Novel
+    // creation needs an explicit workspace because it has no novel id yet.
+    if (config.workspaceId) headers["x-workspace-id"] = config.workspaceId;
     var request = { method: config.method || "GET", headers: headers };
     if (config.body !== undefined) {
       headers["content-type"] = "application/json";
@@ -204,25 +207,31 @@
   /* Workspace bootstrap */
   function createNovel() {
     var authorField = byId("author-id");
+    var novelField = byId("novel-id");
     var titleField = byId("novel-title");
     var authorId = authorField ? authorField.value.trim() : appState.authorId;
+    var novelId = novelField ? novelField.value.trim() : "";
     var title = titleField ? titleField.value.trim() : "";
     if (!authorId) {
       setContextStatus("disabled", "请先填写作者 ID");
+      return;
+    }
+    if (!novelId) {
+      setContextStatus("disabled", "请先填写小说 ID");
       return;
     }
     if (!title) {
       setContextStatus("disabled", "请先填写书名");
       return;
     }
-    var requestedId = newId("novel");
     setContextStatus("loading", "正在创建小说");
     api("/novels", {
       method: "POST",
-      body: { id: requestedId, authorId: authorId, title: title },
+      workspaceId: novelId,
+      body: { id: novelId, authorId: authorId, title: title },
     })
       .then(function (novel) {
-        var createdId = novel && novel.id ? novel.id : requestedId;
+        var createdId = novel && novel.id ? novel.id : novelId;
         appState.novelId = createdId;
         if (byId("novel-id")) byId("novel-id").value = createdId;
         if (titleField) titleField.value = "";
