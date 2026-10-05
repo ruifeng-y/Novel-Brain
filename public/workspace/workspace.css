@@ -203,6 +203,109 @@
   background: var(--surface, #ffffff);
 }
 
+/*
+ * Structure browse tree, inside the Lens Rail below the lens selector. It is
+ * navigation, not a surface: it keeps the rail's width, wraps long titles, and
+ * never pushes the Working Surface around.
+ */
+.ws-structure {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid var(--line, #d7d2c8);
+  min-width: 0;
+}
+
+.ws-structure .ws-region-title {
+  margin-bottom: 6px;
+}
+
+.ws-tree {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  margin: 0 0 6px;
+  padding: 0;
+  list-style: none;
+}
+
+.ws-tree-item {
+  min-width: 0;
+}
+
+.ws-tree-button {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  font: inherit;
+  font-size: 12px;
+  line-height: 16px;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+  border: 1px solid transparent;
+  border-radius: 6px;
+  background: transparent;
+  padding: 3px 6px;
+  overflow-wrap: anywhere;
+}
+
+.ws-tree-button:hover {
+  border-color: var(--line, #d7d2c8);
+}
+
+.ws-tree-item[data-structure-depth="2"] {
+  padding-left: 10px;
+}
+
+.ws-tree-item[data-structure-depth="3"] {
+  padding-left: 20px;
+}
+
+.ws-tree-item[aria-current="true"] .ws-tree-button {
+  border-color: var(--accent, #6b5a3e);
+  background: var(--accent-soft, #f1e9d8);
+  font-weight: 600;
+}
+
+.ws-tree-item[data-structure-orphan="true"] .ws-tree-button {
+  border-style: dashed;
+  border-color: var(--line, #d7d2c8);
+}
+
+.ws-tree-group {
+  margin: 6px 0 4px;
+  font-size: 12px;
+  line-height: 16px;
+  color: var(--ink-muted, #6b6357);
+  overflow-wrap: anywhere;
+}
+
+.ws-issues {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin: 6px 0;
+  padding: 0;
+  list-style: none;
+}
+
+.ws-issue {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  font-size: 12px;
+  line-height: 16px;
+  overflow-wrap: anywhere;
+}
+
+.ws-issue-kind {
+  color: var(--ink-muted, #6b6357);
+}
+
+.ws-issue-id {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
 .ws-surface-head {
   display: flex;
   flex-wrap: wrap;
@@ -285,6 +388,11 @@
     padding: 6px 2px;
     font-size: 12px;
   }
+
+  /* A collapsed icon rail has no room for a tree; the browse tree needs width. */
+  #workspace-shell [data-region="lens-rail"] .ws-structure {
+    display: none;
+  }
 }
 
 @media (max-width: 720px) {
@@ -297,5 +405,10 @@
       "panels"
       "lens"
       "attention";
+  }
+
+  /* At one-region-per-row the rail spans the width, so the tree fits again. */
+  #workspace-shell [data-region="lens-rail"] .ws-structure {
+    display: block;
   }
 }

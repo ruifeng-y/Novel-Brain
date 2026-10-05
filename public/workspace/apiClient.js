@@ -70,5 +70,22 @@ export function createApiClient(options) {
         },
       });
     },
+
+    /**
+     * The persisted Novel -> Arc -> Chapter -> Scene structure of one Novel.
+     * The client renders this answer; it never assembles structure from an
+     * independent source and never invents a node of its own.
+     */
+    getStructure(request_) {
+      const requestId = newRequestId();
+      return request(`/novels/${encodeURIComponent(request_.novelId)}/structure`, {
+        method: "GET",
+        headers: {
+          accept: "application/json",
+          "x-author-id": request_.authorId,
+          "x-request-id": requestId,
+        },
+      });
+    },
   };
 }

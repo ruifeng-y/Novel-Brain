@@ -15,6 +15,7 @@ import {
   zoomFor,
 } from "./focusModel.js";
 import { createApiClient } from "./apiClient.js";
+import { renderStructureLens, zoomLevelFor } from "./structureLens.js";
 
 const STORAGE_KEYS = {
   novelId: "novel-brain.novel-id",
@@ -134,6 +135,8 @@ const client = createApiClient({});
 
 let state = createSessionState("");
 let resolution = null;
+let structure = null;
+let structureError = "";
 let whyOpen = false;
 let lastError = "";
 let statusState = "disabled";
@@ -141,6 +144,17 @@ let statusLabel = "未设置小说";
 
 function byId(id) {
   return document.getElementById(id);
+}
+
+/**
+ * The shell is handed a root whose regions are queried by selector. Only a real
+ * element can host a nested region, so the structure tree is skipped when the
+ * caller supplies a partial root.
+ */
+function childOf(element, selector) {
+  return element && typeof element.querySelector === "function"
+    ? element.querySelector(selector)
+    : null;
 }
 
 function escapeText(value) {
@@ -195,8 +209,45 @@ function renderLensRail(session) {
         )}">${escapeText(lensLabel(lens))}</button></li>`
       );
     }).join("") +
-    `</ul>`
+    `</ul>` +
+    `<div class="ws-structure" data-role="structure-tree"></div>`
   );
+}
+
+/**
+ * The Lens Rail holds the lens buttons and, beneath them, the browse tree of
+ * the current lens. The Structure lens browses the persisted Novel -> Arc ->
+ * Chapter -> Scene tree; a lens whose browse tree is not built yet says so
+ * instead of borrowing the structure tree.
+ *
+ * The granularity is the session semantic zoom of the Novel focus the rail
+ * browses from, so navigating into the tree never collapses it: zoom is display
+ * state, not navigation.
+ */
+function renderStructureRegion(lensRail, session, structureView, structureFailure) {
+  const treeRoot = childOf(lensRail, '[data-role="structure-tree"]');
+  if (!treeRoot) return;
+  if (currentLens(session) !== "structure") {
+    treeRoot.innerHTML = stateBlock("empty", "该镜头暂无浏览树");
+    return;
+  }
+  const focusKey = structureFocusKey(session);
+  renderStructureLens(treeRoot, structureView, {
+    level: zoomLevelFor(session, focusKey),
+    focusKey: focusKey,
+    onSelect: selectStructureNode,
+    error: structureFailure,
+  });
+}
+
+function structureFocusKey(session) {
+  const stack = Array.isArray(session.focusStack) ? session.focusStack : [];
+  for (const entry of stack) {
+    if (entry && entry.kind === "novel" && typeof entry.key === "string" && entry.key.length > 0) {
+      return entry.key;
+    }
+  }
+  return `novel:${typeof session.workspaceId === "string" ? session.workspaceId : ""}`;
 }
 
 function renderFocusBar(session, current, view) {
@@ -403,13 +454,18 @@ function renderIdentityStatus() {
  * Renders the six regions from the session and the server resolution. It is a
  * pure function of its arguments, so the same call also runs outside a browser.
  */
-export function renderShell(root, sessionState, resolved) {
+export function renderShell(root, sessionState, resolved, structureInput) {
   if (!root) return;
   const current = currentFocus(sessionState);
   const view = resolved || null;
+  const structureView = structureInput ? structureInput.view || null : structure;
+  const structureFailure = structureInput ? structureInput.error || "" : structureError;
 
   const lensRail = root.querySelector('[data-region="lens-rail"]');
-  if (lensRail) lensRail.innerHTML = renderLensRail(sessionState);
+  if (lensRail) {
+    lensRail.innerHTML = renderLensRail(sessionState);
+    renderStructureRegion(lensRail, sessionState, structureView, structureFailure);
+  }
 
   const focusBar = root.querySelector('[data-region="focus-bar"]');
   if (focusBar) focusBar.innerHTML = renderFocusBar(sessionState, current, view);
@@ -519,9 +575,15 @@ async function resolveKind(kind, mode, options) {
     // Back never move a Lens the author has chosen (Spec 3.3).
     state = initialiseLens(state, answer.defaultLens);
     if (!options || options.navigate !== false) {
+      const explicitId = options && typeof options.id === "string" ? options.id : "";
       state = navigate(state, {
         kind: answer.kind,
-        id: answer.kind === "novel" ? identity.novelId : "",
+        id:
+          explicitId.length > 0
+            ? explicitId
+            : answer.kind === "novel"
+              ? identity.novelId
+              : "",
         mode: answer.mode,
       });
     }
@@ -619,6 +681,40 @@ function zoomBy(direction) {
   render();
 }
 
+/**
+ * Selecting a node in the Structure tree resolves a Focus through the same
+ * navigation path the locate control uses. It is navigation, not a page switch:
+ * Back, the stale-surface guard, the Lens, and the pinned context all keep
+ * working.
+ */
+function selectStructureNode(node) {
+  if (!node || typeof node.kind !== "string" || node.kind.length === 0) return;
+  resolveKind(node.kind, undefined, { navigate: true, id: node.objectId });
+}
+
+/** Loads the persisted structure of the signed-in Novel for the Lens Rail. */
+async function loadStructure() {
+  const identity = readIdentity();
+  if (identity.novelId.length === 0) {
+    structure = null;
+    structureError = "";
+    render();
+    return;
+  }
+
+  try {
+    structure = await client.getStructure({
+      novelId: identity.novelId,
+      authorId: identity.authorId,
+    });
+    structureError = "";
+  } catch (error) {
+    structure = null;
+    structureError = error && error.message ? error.message : "结构加载失败";
+  }
+  render();
+}
+
 function jump() {
   const target = byId("ws-target");
   const kind = target && target.value ? target.value : "novel";
@@ -638,8 +734,11 @@ function applyIdentity() {
   syncIdentityInputs(identity);
   state = createSessionState(identity.novelId);
   resolution = null;
+  structure = null;
+  structureError = "";
   lastError = "";
   resolveKind("novel", undefined, { navigate: true });
+  loadStructure();
 }
 
 function showLegacy() {
@@ -666,6 +765,7 @@ function showWorkspace() {
   } else {
     render();
   }
+  if (structure === null) loadStructure();
 }
 
 function retry() {
@@ -718,6 +818,10 @@ function handleClick(event) {
     retry();
     return;
   }
+  if (action === "structure-retry") {
+    loadStructure();
+    return;
+  }
   if (action === "apply-identity") {
     applyIdentity();
     return;
@@ -738,6 +842,7 @@ function boot() {
   syncIdentityInputs(readIdentity());
   render();
   resolveKind("novel", undefined, { navigate: true });
+  loadStructure();
 }
 
 if (typeof document !== "undefined") {
