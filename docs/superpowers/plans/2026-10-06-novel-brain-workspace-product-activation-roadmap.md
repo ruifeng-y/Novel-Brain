@@ -253,13 +253,15 @@ git add src/http/routes.ts src/app/composition.ts src/app/prismaComposition.ts s
 git commit -m "feat: 接入 Arc 与 Chapter 持久化"
 ```
 
-### Task 1.2: Structural Navigation Query
+### Task 1.2: Structural Navigation Query and Structure Commands
 
 **Files:**
 - Create: `src/app/structuralNavigationQuery.ts`
-- Modify: `src/application/commandQueryBoundary.ts` (new `manuscript` capability and its query contract)
-- Modify: `src/http/routes.ts` (new read route)
+- Create: `src/app/structureCommandService.ts`
+- Modify: `src/application/commandQueryBoundary.ts` (new `manuscript` capability with its query and command contracts)
+- Modify: `src/http/routes.ts` (new read route plus the structural command routes)
 - Test: `tests/app/taskW1StructuralNavigationQuery.test.ts`
+- Test: `tests/app/taskW1StructureCommands.test.ts`
 - Test: `tests/http/taskW1StructuralNavigationApi.test.ts`
 
 **Interfaces:**
@@ -289,6 +291,22 @@ export function createStructuralNavigationQuery(dependencies: {
 }): {
   getStructure(novelId: string): Promise<StructuralNavigationView>;
 };
+
+export function createStructureCommandService(dependencies: {
+  readonly arcs: Repository<Arc>;
+  readonly chapters: Repository<Chapter>;
+}): {
+  createArc(input: { readonly id: string; readonly novelId: string; readonly title: string; readonly createdAt: Date }): Promise<Arc>;
+  createChapter(input: {
+    readonly id: string;
+    readonly novelId: string;
+    readonly arcId: string;
+    readonly title: string;
+    readonly createdAt: Date;
+  }): Promise<Chapter>;
+  reorderArcChapters(input: { readonly arcId: string; readonly chapterIds: readonly string[]; readonly updatedAt: Date }): Promise<Arc>;
+  reorderChapterScenes(input: { readonly chapterId: string; readonly sceneIds: readonly string[]; readonly updatedAt: Date }): Promise<Chapter>;
+};
 ```
 
 The tests below use local fixture helpers (`dependencies()`, `mismatchedDependencies()`) that assemble
@@ -300,6 +318,34 @@ Boundary note: this adds an eighth Application capability, `manuscript`, with qu
 is not generation, validation, approval, commit, run, recall, or foundation. Extending the Application
 boundary is expected work: the Productionization Architecture's gap register lists the final
 command/query contracts as a missing production surface.
+
+The same capability carries the command contracts `manuscript.command.create-arc`,
+`manuscript.command.create-chapter`, and `manuscript.command.reorder-structure`, because a Structure
+lens that can only read cannot reach W1's exit criteria on a fresh deployment.
+
+`createChapter` must reject an `arcId` that does not exist or belongs to another novel, rather than
+persisting a dangling membership pointer. Reordering writes through the existing `reorderArcChapters`
+and `reorderChapterScenes` domain functions and does not re-implement ordering.
+
+- [ ] **Step 3b: Write the failing authoring test**
+
+```ts
+it("rejects a chapter whose arc does not exist", async () => {
+  const service = createStructureCommandService(dependencies());
+  await expect(
+    service.createChapter({ id: "chapter-x", novelId: "novel-1", arcId: "arc-missing", title: "X", createdAt: new Date() }),
+  ).rejects.toThrow();
+});
+
+it("creates an arc and a chapter and reads back the container order", async () => {
+  const service = createStructureCommandService(dependencies());
+  await service.createArc({ id: "arc-1", novelId: "novel-1", title: "第一幕", createdAt: new Date("2026-10-06T00:00:00.000Z") });
+  await service.createChapter({ id: "chapter-1", novelId: "novel-1", arcId: "arc-1", title: "第一章", createdAt: new Date("2026-10-06T00:00:00.000Z") });
+  const reordered = await service.reorderArcChapters({ arcId: "arc-1", chapterIds: ["chapter-1"], updatedAt: new Date("2026-10-06T00:00:01.000Z") });
+
+  expect(reordered.chapterIds).toEqual(["chapter-1"]);
+});
+```
 
 - [ ] **Step 1: Write the failing query test**
 
@@ -351,13 +397,21 @@ it("serves the structure through the boundary pipeline with the manuscript query
 `GET /novels/:novelId/structure` routes through `httpBoundaryPipeline.execute` and derives its
 authorization resource from `params.novelId`, exactly like the other novel-scoped read routes.
 
+The command routes `POST /novels/:novelId/arcs`, `POST /novels/:novelId/chapters`, and
+`POST /arcs/:arcId/chapter-order` / `POST /chapters/:chapterId/scene-order` follow the same rule. Every
+one of them routes through the pipeline and derives its authorization resource from the novel id that
+the command actually acts on, never from a client-supplied workspace header.
+
+The structure authoring affordance in the interface is not part of W1: W1 makes the capability exist
+and reachable over HTTP, and the Structure lens surface in W2 is what lets the author use it.
+
 - [ ] **Step 6: Run the tests to verify GREEN, then verify no regressions and commit**
 
 ```bash
-npx vitest run tests/app/taskW1StructuralNavigationQuery.test.ts tests/http/taskW1StructuralNavigationApi.test.ts
+npx vitest run tests/app/taskW1StructuralNavigationQuery.test.ts tests/app/taskW1StructureCommands.test.ts tests/http/taskW1StructuralNavigationApi.test.ts
 npm run typecheck && npm test -- --run
-git add src/app/structuralNavigationQuery.ts src/application/commandQueryBoundary.ts src/http/routes.ts tests/app/taskW1StructuralNavigationQuery.test.ts tests/http/taskW1StructuralNavigationApi.test.ts
-git commit -m "feat: 建立结构导航查询"
+git add src/app/structuralNavigationQuery.ts src/app/structureCommandService.ts src/application/commandQueryBoundary.ts src/http/routes.ts tests/app/taskW1StructuralNavigationQuery.test.ts tests/app/taskW1StructureCommands.test.ts tests/http/taskW1StructuralNavigationApi.test.ts
+git commit -m "feat: 建立结构导航查询与结构命令"
 ```
 
 ### Task 1.3: Object Entry Resolution and Focus Policy
