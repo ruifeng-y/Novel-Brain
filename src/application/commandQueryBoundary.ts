@@ -375,6 +375,13 @@ export const applicationCapabilityBoundaries = {
         effect: "read",
         resultChannel: "query-result",
       },
+      {
+        id: "manuscript.query.target-span-resolution",
+        capability: "manuscript",
+        kind: "query",
+        effect: "read",
+        resultChannel: "query-result",
+      },
     ],
   },
   workspace: {

@@ -17,6 +17,7 @@ import { resolveFocus } from "../app/focusResolution";
 import { createStructuralNavigationQuery } from "../app/structuralNavigationQuery";
 import { createStructureCommandService } from "../app/structureCommandService";
 import { createSceneReadQuery } from "../app/sceneReadQuery";
+import { createTargetSpanResolutionQuery } from "../app/targetSpanResolutionQuery";
 import type { FoundationWorkspaceFocus } from "../story/application/foundationWorkspaceContract";
 import type { FoundationGenerationOptions } from "../story/application/foundationEntryService";
 import {
@@ -262,6 +263,7 @@ const routeContracts = {
   recordRecallDisposition: "recall.command.record-recall-disposition",
   structuralNavigation: "manuscript.query.structural-navigation",
   sceneRead: "manuscript.query.scene",
+  targetSpanResolution: "manuscript.query.target-span-resolution",
   createArc: "manuscript.command.create-arc",
   createChapter: "manuscript.command.create-chapter",
   reorderStructure: "manuscript.command.reorder-structure",
@@ -380,6 +382,7 @@ export function registerNovelBrainRoutes(
     scenes: dependencies.scenes,
   });
   const sceneRead = createSceneReadQuery({ scenes: dependencies.scenes });
+  const targetSpanResolution = createTargetSpanResolutionQuery({ scenes: dependencies.scenes });
 
   app.post("/novels", async (request, reply) => {
     const identity = novelBodyIdentitySchema.parse(request.body);
@@ -1059,6 +1062,33 @@ export function registerNovelBrainRoutes(
     );
   });
 
+  /**
+   * The transport is POST only because the span descriptor carries text. The
+   * contract is a read-only query: the handler writes nothing and the boundary
+   * treats it as a query.
+   */
+  app.post("/novels/:novelId/scenes/:sceneId/span-resolution", async (request, reply) => {
+    const novelId = requiredPathParameter(request, "novelId");
+    return pipeline.execute(
+      routeContracts.targetSpanResolution,
+      routeBoundaryContext(request, novelId),
+      routeBoundaryInput(request),
+      async () => {
+        const params = z
+          .object({ novelId: z.string().min(1), sceneId: z.string().min(1) })
+          .parse(request.params);
+        const span = targetSpanDescriptorSchema.parse(request.body);
+        const view = await targetSpanResolution.resolveSpan({
+          novelId: params.novelId,
+          sceneId: params.sceneId,
+          span,
+        });
+        if (!view) return reply.code(404).send({ error: "Scene not found" });
+        return reply.code(200).send(view);
+      },
+    );
+  });
+
   app.post("/novels/:novelId/arcs", async (request, reply) => {
     const novelId = requiredPathParameter(request, "novelId");
     return pipeline.execute(
@@ -1274,6 +1304,12 @@ const workspaceFocusQuerySchema = z.object({
 });
 
 const foundationEntryModeSchema = z.enum(["idea", "existing_text", "blank"]);
+
+const targetSpanDescriptorSchema = z.object({
+  anchorId: z.string().min(1),
+  text: z.string(),
+  sourceContentHash: z.string().min(1),
+});
 
 const sourceReferenceSchema = z.object({
   identity: z.string().min(1),
