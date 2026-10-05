@@ -1,16 +1,19 @@
-import { parseProductionConfiguration } from "../src/platform/productionConfiguration.ts";
-import type { DeploymentProcessController } from "../src/platform/deploymentTopology.ts";
+import type { ProductionConfiguration } from "../src/platform/productionConfiguration.ts";
+import {
+  failProcessEntrypoint,
+  isProcessEntrypoint,
+  runProductionProcessEntrypoint,
+} from "./processEntrypoint.ts";
 
-export async function startApplicationProcess(
-  controller: DeploymentProcessController,
-  env: Readonly<Record<string, string | undefined>> = process.env,
+export async function startApplicationEntry(
+  configuration: ProductionConfiguration,
 ): Promise<void> {
-  parseProductionConfiguration(env);
-  await controller.start("application");
+  const { startDeploymentProcess } = await import("./productionProcessComposition.ts");
+  await startDeploymentProcess("application", configuration);
 }
 
-export async function stopApplicationProcess(
-  controller: DeploymentProcessController,
-): Promise<void> {
-  await controller.stop("application", "SIGTERM");
+if (isProcessEntrypoint(import.meta.url)) {
+  runProductionProcessEntrypoint(import.meta.url, startApplicationEntry).catch(
+    failProcessEntrypoint,
+  );
 }

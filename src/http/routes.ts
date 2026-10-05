@@ -1,5 +1,6 @@
-import type { FastifyInstance } from "fastify";
+import type { FastifyInstance, FastifyRequest } from "fastify";
 import { z } from "zod";
+import type { HttpBoundaryContext, HttpBoundaryPipeline } from "./httpBoundaryPipeline";
 import type { Repository, RevisionedRepository } from "../shared/application/repository";
 import type { VersionSet } from "../shared/domain/versioning";
 import type { Novel } from "../narrative/novel/domain/novel";
@@ -200,7 +201,72 @@ const commitRequestSchema = z.object({
   }),
 });
 
-export function registerNovelBrainRoutes(app: FastifyInstance, dependencies: ApiDependencies): void {
+/**
+ * Each route binds to a real production API boundary contract. The manuscript
+ * scene route has no dedicated contract in the frozen application boundary, so
+ * it binds to the closest foundation command that adopts design content.
+ */
+const routeContracts = {
+  createNovel: "foundation.command.create-blank-foundation",
+  createScene: "foundation.command.adopt-proposal-content",
+  createGenerationTask: "generation.command.create-generation-task",
+  submitGenerationCandidate: "generation.command.submit-generation-candidate",
+  commitChangeSetRevision: "commit.command.commit-change-set-revision",
+  listNovelEvents: "commit.query.commit-evidence",
+} as const;
+
+function headerValue(request: FastifyRequest, name: string): string | undefined {
+  const value = request.headers[name];
+  if (typeof value !== "string") return undefined;
+  const trimmed = value.trim();
+  return trimmed.length === 0 ? undefined : trimmed;
+}
+
+function routeWorkspaceId(request: FastifyRequest): string {
+  const header = headerValue(request, "x-workspace-id");
+  if (header !== undefined) return header;
+  const params = request.params as { novelId?: unknown } | undefined;
+  if (params && typeof params.novelId === "string" && params.novelId.length > 0) {
+    return params.novelId;
+  }
+  return "default-workspace";
+}
+
+function routeBoundaryContext(request: FastifyRequest): HttpBoundaryContext {
+  const workspaceId = routeWorkspaceId(request);
+  const requestId = headerValue(request, "x-request-id") ?? crypto.randomUUID();
+  return {
+    requestId,
+    principal: {
+      subjectId: headerValue(request, "x-author-id") ?? "anonymous-author",
+      workspaceId,
+    },
+    resource: { kind: "workspace", id: workspaceId },
+    correlation: { requestId, traceId: requestId, auditId: requestId },
+  };
+}
+
+function normalizeTransportValue(value: unknown): unknown {
+  if (value === undefined) return null;
+  return JSON.parse(JSON.stringify(value));
+}
+
+function routeBoundaryInput(request: FastifyRequest): unknown {
+  const body = request.body;
+  return {
+    params: normalizeTransportValue(request.params),
+    query: normalizeTransportValue(request.query),
+    ...(body === undefined || body === null
+      ? {}
+      : { body: normalizeTransportValue(body) }),
+  };
+}
+
+export function registerNovelBrainRoutes(
+  app: FastifyInstance,
+  dependencies: ApiDependencies,
+  pipeline: HttpBoundaryPipeline,
+): void {
   app.setErrorHandler((error, _request, reply) => {
     if (error instanceof z.ZodError) {
       return reply.code(400).send({ error: "Bad Request", details: error.issues });
@@ -215,203 +281,252 @@ export function registerNovelBrainRoutes(app: FastifyInstance, dependencies: Api
     return reply.send(error);
   });
 
-  app.post("/novels", async (request, reply) => {
-    const body = z
-      .object({ id: z.string().min(1), authorId: z.string().min(1), title: z.string().min(1) })
-      .parse(request.body);
-    const novel = createNovel({ ...body, createdAt: new Date() });
-    await dependencies.novels.save(novel);
-    return reply.code(201).send(novel);
-  });
+  app.post("/novels", async (request, reply) =>
+    pipeline.execute(
+      routeContracts.createNovel,
+      routeBoundaryContext(request),
+      routeBoundaryInput(request),
+      async () => {
+        const body = z
+          .object({ id: z.string().min(1), authorId: z.string().min(1), title: z.string().min(1) })
+          .parse(request.body);
+        const novel = createNovel({ ...body, createdAt: new Date() });
+        await dependencies.novels.save(novel);
+        return reply.code(201).send(novel);
+      },
+    ),
+  );
 
-  app.post("/novels/:novelId/scenes", async (request, reply) => {
-    const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
-    const novel = await dependencies.novels.findById(params.novelId);
-    if (!novel) return reply.code(404).send({ error: "Novel not found" });
-    const actorId = request.headers["x-author-id"];
-    if (typeof actorId !== "string" || actorId !== novel.authorId) {
-      return reply.code(403).send({ error: "Forbidden" });
-    }
-    const body = z
-      .object({ id: z.string().min(1), chapterId: z.string().min(1), title: z.string().min(1) })
-      .parse(request.body);
-    const scene = createScene({
-      ...body,
-      novelId: params.novelId,
-      revisionId: `${body.id}:rev-1`,
-      commitId: `initial:${body.id}`,
-      createdAt: new Date(),
-    });
-    await dependencies.scenes.save(scene);
-    return reply.code(201).send(scene);
-  });
-
-  app.post("/novels/:novelId/generation-tasks", async (request, reply) => {
-    const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
-    const novel = await dependencies.novels.findById(params.novelId);
-    if (!novel) return reply.code(404).send({ error: "Novel not found" });
-    const actorId = request.headers["x-author-id"];
-    if (typeof actorId !== "string" || actorId !== novel.authorId) {
-      return reply.code(403).send({ error: "Forbidden" });
-    }
-    const body = z
-      .object({
-        id: z.string().min(1),
-        operation: generationOperationSchema,
-        targetSceneId: z.string().min(1),
-        intent: z.string().min(1),
-        basedOnVersionSet: versionSetSchema,
-      })
-      .parse(request.body);
-    const targetScene = await dependencies.scenes.findById(body.targetSceneId);
-    if (!targetScene || targetScene.novelId !== params.novelId) {
-      return reply.code(404).send({ error: "Target scene not found" });
-    }
-    const task = createGenerationTask({
-      ...body,
-      novelId: params.novelId,
-      createdAt: new Date(),
-    });
-    await dependencies.generationTasks.save(task);
-    return reply.code(201).send(task);
-  });
-
-  app.post("/generation-tasks/:taskId/candidates", async (request, reply) => {
-    const params = z.object({ taskId: z.string().min(1) }).parse(request.params);
-    const body = z
-      .object({
-        id: z.string().min(1),
-        agentRole: z.enum(["planner", "writer", "editor", "reviewer", "consistency_agent", "memory_agent"]),
-        modelPolicy: modelPolicySchema,
-        change: candidateChangeSchema,
-      })
-      .parse(request.body);
-    const task = await dependencies.generationTasks.findById(params.taskId);
-    if (!task) return reply.code(404).send({ error: "Not Found" });
-
-    const startedTask = startGenerationTask(task, new Date());
-    const runtimeResult = await dependencies.runtime.execute({
-      taskId: task.id,
-      agentRole: body.agentRole,
-      modelPolicy: body.modelPolicy,
-      basedOnVersionSet: task.basedOnVersionSet,
-      context: { taskIntent: task.intent },
-      requestedChange: body.change,
-    });
-    const candidate = createCandidate({
-      id: body.id,
-      taskId: task.id,
-      novelId: task.novelId,
-      basedOnVersionSet: runtimeResult.basedOnVersionSet,
-      change: runtimeResult.change,
-      createdAt: new Date(),
-    });
-    await dependencies.generationTasks.save(startedTask);
-    await dependencies.candidates.save(candidate);
-    return reply.code(201).send(candidate);
-  });
-
-  app.post("/change-sets/:changeSetId/commit", async (request, reply) => {
-    const params = z.object({ changeSetId: z.string().min(1) }).parse(request.params);
-    const body = commitRequestSchema.parse(request.body);
-    const candidate = await dependencies.candidates.findById(body.candidateId);
-    if (!candidate) {
-      return reply.code(404).send({ error: "Not Found" });
-    }
-
-    const now = new Date();
-    const atomicChanges = candidateAtomicChanges(candidate.change);
-    const sceneChange = atomicChanges.find(change =>
-      change.type === "text" || change.type === "local_text",
-    );
-    const scene =
-      sceneChange && (sceneChange.type === "text" || sceneChange.type === "local_text")
-        ? await dependencies.scenes.findById(sceneChange.sceneId)
-        : undefined;
-    if (sceneChange && !scene) {
-      return reply.code(409).send({ error: "Target scene not found" });
-    }
-
-    const changes = atomicChanges.map((change, index) =>
-      candidateChangeToDomainChange({
-        change,
-        id: `change:${body.changeSetRevisionId}:${index + 1}`,
-        sourceType: "candidate",
-        sourceReference: {
-          identity: body.candidateId,
-          version: body.candidateSource.version,
-          hash: body.candidateSource.hash,
-        },
-        basedOnVersionSet: candidate.basedOnVersionSet,
-      }),
-    );
-    const revision = withChanges(
-      createInitialChangeSetRevision({
-        revisionId: body.changeSetRevisionId,
-        changeSetId: params.changeSetId,
-        novelId: candidate.novelId,
-        createdAt: now,
-      }),
-      changes,
-    );
-
-    const validation = validateCandidate({
-      validationId: body.validationId,
-      changeSetRevisionId: revision.revisionId,
-      planVersionId: body.planVersionId,
-      candidate,
-      scene,
-      mustPreserve: body.mustPreserve,
-      createdAt: now,
-    });
-    if (validation.outcome === "fail") return reply.code(422).send(validation.run);
-
-    const requirements = body.approvalScopeRequirements.map(
-      (requirement): CommitChangeSetRevisionApprovalRequirement => requirement,
-    );
-    const reviewDecisions = reviewsForRequirements({
-      revision,
-      requirements,
-      template: body.reviewDecision,
-      validationId: body.validationId,
-      createdAt: now,
-    });
-
-    try {
-      const commit = await commitChangeSetRevision({
-        transaction: dependencies.commitTransaction,
-        input: {
-          commitId: body.commitId,
-          changeSetRevision: revision,
-          validationRuns: [validation.run],
-          reviewDecisions,
-          currentRevisionFacts: body.currentRevisionFacts,
-          targetInvariantViolations: body.targetInvariantViolations,
-          requiredApproval: body.requiredApproval,
-          approvalScopeRequirements: requirements,
-          now,
-        },
-      });
-      return reply.code(201).send(commit);
-    } catch (error) {
-      if (error instanceof CommitGateBlockedError) {
-        return reply.code(409).send({
-          error: "Commit Conflict",
-          blockers: error.gate.blockers,
-          requiredActions: error.gate.requiredActions,
+  app.post("/novels/:novelId/scenes", async (request, reply) =>
+    pipeline.execute(
+      routeContracts.createScene,
+      routeBoundaryContext(request),
+      routeBoundaryInput(request),
+      async () => {
+        const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
+        const novel = await dependencies.novels.findById(params.novelId);
+        if (!novel) return reply.code(404).send({ error: "Novel not found" });
+        const actorId = request.headers["x-author-id"];
+        if (typeof actorId !== "string" || actorId !== novel.authorId) {
+          return reply.code(403).send({ error: "Forbidden" });
+        }
+        const body = z
+          .object({ id: z.string().min(1), chapterId: z.string().min(1), title: z.string().min(1) })
+          .parse(request.body);
+        const scene = createScene({
+          ...body,
+          novelId: params.novelId,
+          revisionId: `${body.id}:rev-1`,
+          commitId: `initial:${body.id}`,
+          createdAt: new Date(),
         });
-      }
-      if (error instanceof Error && error.message.startsWith("Stale dependency:")) {
-        return reply.code(409).send({ error: "Commit Conflict", reason: error.message });
-      }
-      throw error;
-    }
-  });
+        await dependencies.scenes.save(scene);
+        return reply.code(201).send(scene);
+      },
+    ),
+  );
 
-  app.get("/novels/:novelId/events", async request => {
-    const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
-    return dependencies.eventStore.listByNovel(params.novelId);
-  });
+  app.post("/novels/:novelId/generation-tasks", async (request, reply) =>
+    pipeline.execute(
+      routeContracts.createGenerationTask,
+      routeBoundaryContext(request),
+      routeBoundaryInput(request),
+      async () => {
+        const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
+        const novel = await dependencies.novels.findById(params.novelId);
+        if (!novel) return reply.code(404).send({ error: "Novel not found" });
+        const actorId = request.headers["x-author-id"];
+        if (typeof actorId !== "string" || actorId !== novel.authorId) {
+          return reply.code(403).send({ error: "Forbidden" });
+        }
+        const body = z
+          .object({
+            id: z.string().min(1),
+            operation: generationOperationSchema,
+            targetSceneId: z.string().min(1),
+            intent: z.string().min(1),
+            basedOnVersionSet: versionSetSchema,
+          })
+          .parse(request.body);
+        const targetScene = await dependencies.scenes.findById(body.targetSceneId);
+        if (!targetScene || targetScene.novelId !== params.novelId) {
+          return reply.code(404).send({ error: "Target scene not found" });
+        }
+        const task = createGenerationTask({
+          ...body,
+          novelId: params.novelId,
+          createdAt: new Date(),
+        });
+        await dependencies.generationTasks.save(task);
+        return reply.code(201).send(task);
+      },
+    ),
+  );
+
+  app.post("/generation-tasks/:taskId/candidates", async (request, reply) =>
+    pipeline.execute(
+      routeContracts.submitGenerationCandidate,
+      routeBoundaryContext(request),
+      routeBoundaryInput(request),
+      async () => {
+        const params = z.object({ taskId: z.string().min(1) }).parse(request.params);
+        const body = z
+          .object({
+            id: z.string().min(1),
+            agentRole: z.enum([
+              "planner",
+              "writer",
+              "editor",
+              "reviewer",
+              "consistency_agent",
+              "memory_agent",
+            ]),
+            modelPolicy: modelPolicySchema,
+            change: candidateChangeSchema,
+          })
+          .parse(request.body);
+        const task = await dependencies.generationTasks.findById(params.taskId);
+        if (!task) return reply.code(404).send({ error: "Not Found" });
+
+        const startedTask = startGenerationTask(task, new Date());
+        const runtimeResult = await dependencies.runtime.execute({
+          taskId: task.id,
+          agentRole: body.agentRole,
+          modelPolicy: body.modelPolicy,
+          basedOnVersionSet: task.basedOnVersionSet,
+          context: { taskIntent: task.intent },
+          requestedChange: body.change,
+        });
+        const candidate = createCandidate({
+          id: body.id,
+          taskId: task.id,
+          novelId: task.novelId,
+          basedOnVersionSet: runtimeResult.basedOnVersionSet,
+          change: runtimeResult.change,
+          createdAt: new Date(),
+        });
+        await dependencies.generationTasks.save(startedTask);
+        await dependencies.candidates.save(candidate);
+        return reply.code(201).send(candidate);
+      },
+    ),
+  );
+
+  app.post("/change-sets/:changeSetId/commit", async (request, reply) =>
+    pipeline.execute(
+      routeContracts.commitChangeSetRevision,
+      routeBoundaryContext(request),
+      routeBoundaryInput(request),
+      async () => {
+        const params = z.object({ changeSetId: z.string().min(1) }).parse(request.params);
+        const body = commitRequestSchema.parse(request.body);
+        const candidate = await dependencies.candidates.findById(body.candidateId);
+        if (!candidate) {
+          return reply.code(404).send({ error: "Not Found" });
+        }
+
+        const now = new Date();
+        const atomicChanges = candidateAtomicChanges(candidate.change);
+        const sceneChange = atomicChanges.find(change =>
+          change.type === "text" || change.type === "local_text",
+        );
+        const scene =
+          sceneChange && (sceneChange.type === "text" || sceneChange.type === "local_text")
+            ? await dependencies.scenes.findById(sceneChange.sceneId)
+            : undefined;
+        if (sceneChange && !scene) {
+          return reply.code(409).send({ error: "Target scene not found" });
+        }
+
+        const changes = atomicChanges.map((change, index) =>
+          candidateChangeToDomainChange({
+            change,
+            id: `change:${body.changeSetRevisionId}:${index + 1}`,
+            sourceType: "candidate",
+            sourceReference: {
+              identity: body.candidateId,
+              version: body.candidateSource.version,
+              hash: body.candidateSource.hash,
+            },
+            basedOnVersionSet: candidate.basedOnVersionSet,
+          }),
+        );
+        const revision = withChanges(
+          createInitialChangeSetRevision({
+            revisionId: body.changeSetRevisionId,
+            changeSetId: params.changeSetId,
+            novelId: candidate.novelId,
+            createdAt: now,
+          }),
+          changes,
+        );
+
+        const validation = validateCandidate({
+          validationId: body.validationId,
+          changeSetRevisionId: revision.revisionId,
+          planVersionId: body.planVersionId,
+          candidate,
+          scene,
+          mustPreserve: body.mustPreserve,
+          createdAt: now,
+        });
+        if (validation.outcome === "fail") return reply.code(422).send(validation.run);
+
+        const requirements = body.approvalScopeRequirements.map(
+          (requirement): CommitChangeSetRevisionApprovalRequirement => requirement,
+        );
+        const reviewDecisions = reviewsForRequirements({
+          revision,
+          requirements,
+          template: body.reviewDecision,
+          validationId: body.validationId,
+          createdAt: now,
+        });
+
+        try {
+          const commit = await commitChangeSetRevision({
+            transaction: dependencies.commitTransaction,
+            input: {
+              commitId: body.commitId,
+              changeSetRevision: revision,
+              validationRuns: [validation.run],
+              reviewDecisions,
+              currentRevisionFacts: body.currentRevisionFacts,
+              targetInvariantViolations: body.targetInvariantViolations,
+              requiredApproval: body.requiredApproval,
+              approvalScopeRequirements: requirements,
+              now,
+            },
+          });
+          return reply.code(201).send(commit);
+        } catch (error) {
+          if (error instanceof CommitGateBlockedError) {
+            return reply.code(409).send({
+              error: "Commit Conflict",
+              blockers: error.gate.blockers,
+              requiredActions: error.gate.requiredActions,
+            });
+          }
+          if (error instanceof Error && error.message.startsWith("Stale dependency:")) {
+            return reply.code(409).send({ error: "Commit Conflict", reason: error.message });
+          }
+          throw error;
+        }
+      },
+    ),
+  );
+
+  app.get("/novels/:novelId/events", async request =>
+    pipeline.execute(
+      routeContracts.listNovelEvents,
+      routeBoundaryContext(request),
+      routeBoundaryInput(request),
+      async () => {
+        const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
+        return dependencies.eventStore.listByNovel(params.novelId);
+      },
+    ),
+  );
 }
 
 function candidateAtomicChanges(

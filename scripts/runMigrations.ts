@@ -1,5 +1,6 @@
 import { spawnSync } from "node:child_process";
 import { parseProductionConfiguration } from "../src/platform/productionConfiguration.ts";
+import { failProcessEntrypoint, isProcessEntrypoint } from "./processEntrypoint.ts";
 
 export type MigrationCommandRunner = (
   command: string,
@@ -16,7 +17,7 @@ export function runMigrationEntry(
       shell: process.platform === "win32",
     }),
 ): void {
-  const configuration = parseProductionConfiguration(env);
+  parseProductionConfiguration(env);
   const result = run(
     process.platform === "win32" ? "npx.cmd" : "npx",
     ["prisma", "migrate", "deploy"],
@@ -25,5 +26,12 @@ export function runMigrationEntry(
   if (result.status !== 0) {
     throw new Error(`migration failed with exit code ${result.status ?? "unknown"}`);
   }
-  void configuration;
+}
+
+if (isProcessEntrypoint(import.meta.url)) {
+  try {
+    runMigrationEntry(process.env);
+  } catch (error) {
+    failProcessEntrypoint(error);
+  }
 }

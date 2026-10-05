@@ -1,15 +1,28 @@
 import { z } from "zod";
-import { apiBoundaryContracts, type ApiBoundaryContract } from "./productionApiBoundary";
+import {
+  apiBoundaryContracts,
+  type ApiBoundaryContract,
+  type ApiRequestValidationResult,
+} from "./productionApiBoundary";
 
-const transportRequestSchema = z
-  .object({
-    idempotencyKey: z.string().min(1).optional(),
-  })
-  .passthrough();
+const transportKeys = z.record(z.string(), z.unknown());
+
+function schemaFor(contract: ApiBoundaryContract): z.ZodType {
+  const identity = {
+    contractId: z.literal(contract.id),
+    params: transportKeys.optional(),
+    query: transportKeys.optional(),
+    body: transportKeys.optional(),
+    ...(contract.idempotency === "not-applicable"
+      ? {}
+      : { idempotencyKey: z.string().min(1).optional() }),
+  };
+  return z.object(identity).passthrough();
+}
 
 const schemasById = new Map<string, z.ZodType>();
 for (const contract of apiBoundaryContracts) {
-  schemasById.set(contract.id, transportRequestSchema);
+  schemasById.set(contract.id, schemaFor(contract));
 }
 
 export const productRequestSchemas: Readonly<Record<string, z.ZodType>> = Object.freeze(
@@ -26,6 +39,33 @@ export function getProductRequestSchema(contractId: string): z.ZodType {
   const schema = productRequestSchemas[contractId] ?? productRequestSchemaAliases[contractId];
   if (!schema) throw new Error(`unknown production request schema: ${contractId}`);
   return schema;
+}
+
+export function createProductRequestValidators(): ReadonlyMap<
+  string,
+  (input: unknown) => ApiRequestValidationResult<unknown>
+> {
+  return new Map(
+    apiBoundaryContracts.map(contract => {
+      const schema = schemasById.get(contract.id)!;
+      const validate = (input: unknown): ApiRequestValidationResult<unknown> => {
+        const parsed = schema.safeParse({
+          ...(typeof input === "object" && input !== null ? input : { body: input }),
+          contractId: contract.id,
+        });
+        return parsed.success
+          ? { valid: true, request: input }
+          : {
+              valid: false,
+              issues: parsed.error.issues.map(issue => ({
+                code: issue.code,
+                message: issue.message,
+              })),
+            };
+      };
+      return [contract.id, validate] as const;
+    }),
+  );
 }
 
 export function isProductionApiContract(value: unknown): value is ApiBoundaryContract {

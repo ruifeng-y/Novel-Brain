@@ -1,3 +1,5 @@
+import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { parseProductionConfiguration } from "../../src/platform/productionConfiguration";
 import { createProductionProcessBootstrap } from "../../src/platform/productionProcessBootstrap";
@@ -229,5 +231,32 @@ describe("[task:R1] [recovery] process worker adapter", () => {
         retryable: false,
       },
     });
+  });
+});
+
+describe("[task:R1] [integration] direct process entrypoints", () => {
+  it.each([
+    "runMigrations.ts",
+    "startApplication.ts",
+    "startWorker.ts",
+  ])("executes %s as a real process entrypoint", script => {
+    const result = spawnSync(
+      process.execPath,
+      [resolve(process.cwd(), "scripts", script)],
+      {
+        encoding: "utf8",
+        env: {
+          ...process.env,
+          DATABASE_URL: "",
+          APPLICATION_PORT: "",
+          PUBLIC_ORIGIN: "",
+          WORKER_CONCURRENCY: "",
+          LOG_LEVEL: "",
+        },
+      },
+    );
+
+    expect(result.status).not.toBe(0);
+    expect(`${result.stderr}${result.stdout}`).toContain("DATABASE_URL is required");
   });
 });

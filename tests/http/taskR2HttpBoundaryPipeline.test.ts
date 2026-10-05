@@ -251,13 +251,46 @@ describe("[task:R2] [integration] HTTP validation and replay", () => {
   });
 });
 
+describe("[task:R2] [integration] route pipeline enforcement", () => {
+  it("routes every actual HTTP request through the configured boundary pipeline", async () => {
+    const calls: string[] = [];
+    const pipeline = {
+      async execute<TValue>(
+        contractId: string,
+        _context: unknown,
+        input: unknown,
+        handler: (validated: unknown) => Promise<TValue>,
+      ): Promise<TValue> {
+        calls.push(contractId);
+        return handler(input);
+      },
+    };
+    const app = createNovelBrainServer(createInMemoryEngineDependencies(), {
+      httpBoundaryPipeline: pipeline,
+    });
+
+    const response = await app.inject({
+      method: "POST",
+      url: "/novels",
+      payload: { id: "novel-route-pipeline", authorId: "author-1", title: "Novel" },
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(calls).toEqual(["foundation.command.create-blank-foundation"]);
+  });
+});
+
 describe("[task:R2] [cross-system] HTTP schemas and audit", () => {
   it("exposes schemas for every production API contract without Domain shapes", () => {
     for (const contract of apiBoundaryContracts) {
       const schema = productRequestSchemas[contract.id];
       expect(schema).toBeInstanceOf(z.ZodType);
-      expect(schema!.safeParse({ idempotencyKey: "key" }).success).toBe(true);
+      expect(schema!.safeParse({ contractId: contract.id, body: {} }).success).toBe(true);
+      expect(schema!.safeParse({ contractId: `${contract.id}:other`, body: {} }).success).toBe(false);
     }
+    expect(
+      productRequestSchemas["generation.command.create-generation-task"],
+    ).not.toBe(productRequestSchemas["generation.command.start-generation-task"]);
     expect(productRequestSchemaAliases["api.command"]).toBe(productRequestSchemas[getApiBoundaryContract("api.command").id]);
     expect(commandResultSchema.safeParse({
       channel: "command-result",

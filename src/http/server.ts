@@ -1,5 +1,6 @@
 import Fastify from "fastify";
 import { registerNovelBrainRoutes, type ApiDependencies } from "./routes";
+import { createDevelopmentHttpBoundaryPipeline } from "./developmentHttpBoundaryPipeline";
 import type { HttpBoundaryPipeline } from "./httpBoundaryPipeline";
 
 export interface NovelBrainServerOptions {
@@ -13,10 +14,10 @@ export function createNovelBrainServer(
   options: NovelBrainServerOptions = {},
 ) {
   const app = Fastify({ logger: false });
-  if (options.httpBoundaryPipeline !== undefined) {
-    app.decorate("httpBoundaryPipeline", options.httpBoundaryPipeline);
-  }
-  registerNovelBrainRoutes(app, dependencies);
+  const httpBoundaryPipeline =
+    options.httpBoundaryPipeline ?? createDevelopmentHttpBoundaryPipeline();
+  app.decorate("httpBoundaryPipeline", httpBoundaryPipeline);
+  registerNovelBrainRoutes(app, dependencies, httpBoundaryPipeline);
   return app as ReturnType<typeof Fastify> & {
     readonly httpBoundaryPipeline?: HttpBoundaryPipeline;
   };
