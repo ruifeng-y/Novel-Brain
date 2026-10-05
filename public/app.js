@@ -16,6 +16,7 @@
     activeView: "overview",
     foundationMode: "idea",
     foundationResult: undefined,
+    recallItems: [],
     runChain: {
       sceneId: "",
       intent: "",
@@ -788,13 +789,45 @@
   }
 
   /* Recall */
+  var RECALL_ACTIONS = [
+    { action: "inspect", label: "查看" },
+    { action: "dismiss", label: "关闭" },
+    { action: "snooze", label: "暂停" },
+    { action: "confirm", label: "确认" },
+    { action: "ignore", label: "忽略" },
+    { action: "why", label: "原因" },
+  ];
+
+  var RECALL_STATE_LABELS = {
+    active: "待处理",
+    inspected: "已查看",
+    dismissed: "已关闭",
+    snoozed: "已暂停",
+    confirmed: "已确认",
+    ignored: "已忽略",
+    why_requested: "已请求原因",
+  };
+
+  function recallStateLabel(state) {
+    return RECALL_STATE_LABELS[state] || state || "未处置";
+  }
+
+  function recallControlsMarkup() {
+    return (
+      '<div class="form-field"><label for="recall-snooze-until">暂停至此时间</label>' +
+      '<input id="recall-snooze-until" name="snoozedUntil" type="text" autocomplete="off"' +
+      ' spellcheck="false" placeholder="2026-10-06T00:00:00.000Z" /></div>'
+    );
+  }
+
   function loadRecall() {
-    var outcome = mountSurface("recall", "");
+    var outcome = mountSurface("recall", recallControlsMarkup());
     if (!requireNovel(outcome)) return;
     renderState(outcome, "loading");
     api("/novels/" + encodeURIComponent(appState.novelId) + "/attention")
       .then(function (view) {
         var items = Array.isArray(view.items) ? view.items : [];
+        appState.recallItems = items;
         if (items.length === 0) {
           renderState(outcome, "empty", {
             label: "暂无关注项",
@@ -812,32 +845,145 @@
 
   function recallMarkup(view, items) {
     var authority = view.authority || {};
+    var dispositions = Array.isArray(view.dispositions) ? view.dispositions : [];
+    var dispositionByItem = Object.create(null);
+    dispositions.forEach(function (disposition) {
+      dispositionByItem[disposition.itemId] = disposition;
+    });
     return (
       '<div class="panel"><h3 class="panel-title">关注</h3><dl class="data-grid">' +
       row("条目", text(items.length)) +
+      row("已处置", text(dispositions.length)) +
       row("具有权威性", text(String(authority.authoritative))) +
       row("可修改叙事真相", text(String(authority.mayMutateNarrativeTruth))) +
       row("可直接创建任务", text(String(authority.mayCreateTaskDirectly))) +
       row("可提交", text(String(authority.mayCommit))) +
       row("建议动作通道", text(authority.proposedActionChannel)) +
-      "</dl></div>" +
+      "</dl><p class=\"inline-note\">召回只读：记录处置只变更关注状态，不提交、不创建任务。</p></div>" +
       '<div class="panel"><h3 class="panel-title">条目</h3>' +
       listOrEmpty(
         items,
         function (item) {
-          var explanation = item.explanation || {};
-          return (
-            '<li><span class="item-main">' +
-            escapeHtml(item.classification || item.detectionKind || item.itemId) +
-            '<span class="item-meta">' +
-            escapeHtml(explanation.reason || "") +
-            "</span></span></li>"
-          );
+          return recallItemMarkup(item, dispositionByItem[item.itemId]);
         },
         "暂无关注项",
       ) +
       "</div>"
     );
+  }
+
+  function recallItemMarkup(item, disposition) {
+    var explanation = item.explanation || {};
+    return (
+      '<li data-item-id="' +
+      escapeHtml(item.itemId) +
+      '"><span class="item-main">' +
+      escapeHtml(item.classification || item.detectionKind || item.itemId) +
+      '<span class="item-meta">' +
+      escapeHtml(explanation.reason || "") +
+      "</span>" +
+      '<span class="item-meta">处置状态：' +
+      escapeHtml(recallStateLabel(disposition ? disposition.state : "")) +
+      "</span></span>" +
+      '<span class="item-actions">' +
+      recallActionButtons(item) +
+      "</span></li>"
+    );
+  }
+
+  function recallActionButtons(item) {
+    return RECALL_ACTIONS.map(function (entry) {
+      return (
+        '<button type="button" class="button" data-action="record-disposition" data-item-id="' +
+        escapeHtml(item.itemId) +
+        '" data-disposition-action="' +
+        entry.action +
+        '" title="' +
+        escapeHtml(entry.label) +
+        '该关注项">' +
+        escapeHtml(entry.label) +
+        "</button>"
+      );
+    }).join("");
+  }
+
+  function recallItemById(itemId) {
+    for (var index = 0; index < appState.recallItems.length; index += 1) {
+      if (appState.recallItems[index].itemId === itemId) return appState.recallItems[index];
+    }
+    return null;
+  }
+
+  function dispositionEvidenceReferences(item) {
+    var explanation = item.explanation || {};
+    if (
+      Array.isArray(explanation.evidenceReferences) &&
+      explanation.evidenceReferences.length > 0
+    ) {
+      return explanation.evidenceReferences;
+    }
+    if (Array.isArray(item.evidence)) {
+      return item.evidence
+        .map(function (entry) {
+          return entry.evidenceReference;
+        })
+        .filter(function (reference) {
+          return Boolean(reference);
+        });
+    }
+    return [];
+  }
+
+  function recordDisposition(itemId, action) {
+    var outcome = mountSurface("recall", recallControlsMarkup());
+    var item = recallItemById(itemId);
+    if (!item || !item.evidenceFingerprint) {
+      renderState(outcome, "disabled", {
+        label: "关注项不可用",
+        detail: "请重新载入关注项后再处置。",
+      });
+      return;
+    }
+    var evidenceReferences = dispositionEvidenceReferences(item);
+    if (evidenceReferences.length === 0) {
+      renderState(outcome, "disabled", {
+        label: "缺少证据引用",
+        detail: "该关注项没有可回传的证据引用。",
+      });
+      return;
+    }
+    var body = {
+      novelId: item.novelId || appState.novelId,
+      candidateId: item.candidateId,
+      evidenceFingerprint: item.evidenceFingerprint,
+      reason: (item.explanation && item.explanation.reason) || item.detectionKind,
+      evidenceReferences: evidenceReferences,
+      action: action,
+    };
+    if (action === "snooze") {
+      var snoozeField = byId("recall-snooze-until");
+      var snoozedUntil = snoozeField ? snoozeField.value.trim() : "";
+      if (!snoozedUntil) {
+        renderState(outcome, "disabled", {
+          label: "需要暂停时间",
+          detail: "请填写 ISO 时间后再暂停。",
+        });
+        return;
+      }
+      body.snoozedUntil = snoozedUntil;
+    }
+    renderState(outcome, "loading");
+    api("/attention/" + encodeURIComponent(itemId) + "/dispositions", {
+      method: "POST",
+      body: body,
+    })
+      .then(function () {
+        setContextStatus("success", "关注项处置已记录");
+        loadRecall();
+      })
+      .catch(function (error) {
+        showError(outcome, error);
+      });
   }
 
   function loadView(view) {
@@ -953,6 +1099,13 @@
     }
     if (action === "resume-run") {
       transitionRun("resume");
+      return;
+    }
+    if (action === "record-disposition") {
+      recordDisposition(
+        trigger.getAttribute("data-item-id"),
+        trigger.getAttribute("data-disposition-action"),
+      );
     }
   }
 

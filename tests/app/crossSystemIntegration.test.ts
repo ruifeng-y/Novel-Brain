@@ -524,7 +524,7 @@ describe("[task:6.1-6.5] cross-system integration contracts", () => {
       createdAt: now,
     });
     const run = createProductionRun({ id: "run-workspace-6", novelId, runPlanRevision: plan, createdAt: now });
-    const item = projectRecallItems({
+    const projected = projectRecallItems({
       candidates: [{
         candidateId: "candidate-attention-6",
         detectionKind: "validation_attention",
@@ -543,6 +543,11 @@ describe("[task:6.1-6.5] cross-system integration contracts", () => {
         }],
       }],
     })[0]!;
+    const item = {
+      ...projected,
+      novelId,
+      evidenceFingerprint: "workspace-attention-fingerprint-6",
+    };
     const contract = createWorkspaceIntegrationContract({ foundation });
     const view = await contract.query({
       novelId,

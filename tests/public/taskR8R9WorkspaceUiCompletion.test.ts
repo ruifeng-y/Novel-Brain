@@ -46,3 +46,46 @@ describe("[task:R8] [regression] run creation release registration", () => {
     expect(() => parseVerificationCli(["system", "--task", "R7-R9"])).not.toThrow();
   });
 });
+
+describe("[task:R9] [cross-system] recall attention disposition surface", () => {
+  it("exposes the frozen author actions through the disposition endpoint", () => {
+    const source = publicFile("app.js");
+
+    expect(source).toContain('data-action="record-disposition"');
+    expect(source).toContain("data-disposition-action");
+    expect(source).toContain('"/attention/" + encodeURIComponent');
+    expect(source).toContain("/dispositions");
+    expect(source).toContain("evidenceFingerprint");
+    for (const action of ["inspect", "dismiss", "snooze", "confirm", "ignore", "why"]) {
+      expect(source).toContain(`action: "${action}"`);
+    }
+  });
+
+  it("keeps the recall view read-only, Chinese, and free of commit or task creation", () => {
+    const source = publicFile("app.js");
+
+    expect(source).toContain("召回只读");
+    expect(source).toContain("不提交、不创建任务");
+    expect(source).toContain("可修改叙事真相");
+    expect(source).toContain("建议动作通道");
+    expect(source).not.toContain("/change-sets/");
+    expect(source).not.toMatch(/data-action="commit"/);
+  });
+
+  it("renders the frozen disposition state set with Chinese copy", () => {
+    const source = publicFile("app.js");
+
+    for (const state of [
+      "active",
+      "inspected",
+      "dismissed",
+      "snoozed",
+      "confirmed",
+      "ignored",
+      "why_requested",
+    ]) {
+      expect(source).toContain(`${state}: "`);
+    }
+    expect(source).toContain("处置状态：");
+  });
+});

@@ -62,7 +62,12 @@ import {
 } from "../recall/attention/attentionDispositionService";
 import type { AttentionDispositionRecord } from "../recall/attention/attentionDisposition";
 import type { AttentionDispositionPersistence } from "../recall/attention/attentionDispositionPersistence";
-import type { RecallItem } from "../recall/projection/recallItemProjection";
+import {
+  createRecallAttentionSource,
+  type RecallAttentionItem,
+  type RecallAttentionSource,
+} from "./recallAttentionSource";
+import type { DependencyImpactPersistence } from "../dependency/application/dependencyImpactPersistence";
 import type { ProductionRunStateBoundary, RecallAuthorityBoundary } from "./productionRunRecallSurfaceContract";
 import type { WorkspaceTruthOwner } from "./workspaceQueryPresentationContract";
 
@@ -182,23 +187,21 @@ export interface RunProductView {
 
 export interface AttentionProductView {
   readonly novelId: string;
-  readonly items: readonly RecallItem[];
+  readonly items: readonly RecallAttentionItem[];
   readonly dispositions: readonly AttentionDispositionRecord[];
   readonly authority: RecallAuthorityBoundary;
   readonly truthOwner: WorkspaceTruthOwner;
-}
-
-/** Read-only attention source. Recall observes, it never owns Narrative Truth. */
-export interface RecallAttentionSource {
-  listItems(novelId: string): Promise<readonly RecallItem[]> | readonly RecallItem[];
 }
 
 export interface ProductSurfaceCommandDependencies {
   readonly foundationPersistence: NarrativeProposalPersistence;
   readonly runPersistence: RunOrchestrationPersistence;
   readonly attentionPersistence: AttentionDispositionPersistence;
-  readonly runtime?: RuntimeAdapter;
+  /** Read-only Recall observation source; wired from persisted dependency/impact data. */
+  readonly dependencyImpactPersistence?: DependencyImpactPersistence;
+  /** Explicit override for the attention source; defaults to the persisted impact source. */
   readonly recallAttention?: RecallAttentionSource;
+  readonly runtime?: RuntimeAdapter;
 }
 
 export interface ProductSurfaceCommandService {
@@ -333,6 +336,13 @@ function workflowChange(
 export function createProductSurfaceCommandService(
   dependencies: ProductSurfaceCommandDependencies,
 ): ProductSurface {
+  const recallAttention =
+    dependencies.recallAttention ??
+    (dependencies.dependencyImpactPersistence === undefined
+      ? undefined
+      : createRecallAttentionSource({
+          impactPersistence: dependencies.dependencyImpactPersistence,
+        }));
   return {
     async createFoundationEntry(input) {
       const occurredAt = input.occurredAt ?? new Date();
@@ -494,9 +504,9 @@ export function createProductSurfaceCommandService(
 
     async getAttention(input) {
       const items =
-        dependencies.recallAttention === undefined
+        recallAttention === undefined
           ? []
-          : await dependencies.recallAttention.listItems(input.novelId);
+          : await recallAttention.getAttentionItems({ novelId: input.novelId });
       const dispositions =
         await dependencies.attentionPersistence.dispositions.listByNovel(input.novelId);
       return deepFreeze({

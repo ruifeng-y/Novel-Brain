@@ -445,6 +445,12 @@ textarea {
   color: var(--muted);
 }
 
+.inline-note {
+  margin: 10px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+}
+
 .form-field {
   display: flex;
   flex-direction: column;

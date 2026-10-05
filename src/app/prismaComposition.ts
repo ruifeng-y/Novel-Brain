@@ -23,6 +23,7 @@ import { DeterministicFoundationRuntime } from "../production/runtime/determinis
 import { createPrismaNarrativeProposalPersistence } from "../story/application/narrativeProposalPersistence";
 import { createPrismaRunOrchestrationPersistence } from "../production/application/runPlanPersistence";
 import { createPrismaAttentionDispositionPersistence } from "../recall/attention/attentionDispositionPersistence";
+import { createPrismaDependencyImpactPersistence } from "../dependency/application/dependencyImpactPersistence";
 
 /**
  * Frozen VersionReference aggregate names for the aggregates whose identity is
@@ -49,6 +50,7 @@ function revive<T>(payload: Record<string, unknown>): T {
 export function createPrismaEngineDependencies(prisma: PrismaClient): ApiDependencies {
   const codec = capabilityPersistencePayloadCodec;
   const commitTransaction = createPrismaCommitTransaction(prisma);
+  const dependencyImpactPersistence = createPrismaDependencyImpactPersistence(prisma);
   return {
     novels: new PrismaRepository<Novel>(
       prisma,
@@ -99,6 +101,7 @@ export function createPrismaEngineDependencies(prisma: PrismaClient): ApiDepende
       foundationPersistence: createPrismaNarrativeProposalPersistence(prisma),
       runPersistence: createPrismaRunOrchestrationPersistence(prisma),
       attentionPersistence: createPrismaAttentionDispositionPersistence(prisma),
+      dependencyImpactPersistence,
       runtime: new DeterministicFoundationRuntime(),
     },
   };

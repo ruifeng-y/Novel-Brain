@@ -8,11 +8,13 @@ import { DeterministicFoundationRuntime } from "../production/runtime/determinis
 import { createInMemoryNarrativeProposalPersistence } from "../story/application/narrativeProposalPersistence";
 import { createInMemoryRunOrchestrationPersistence } from "../production/application/runPlanPersistence";
 import { createInMemoryAttentionDispositionPersistence } from "../recall/attention/attentionDispositionPersistence";
+import { createInMemoryDependencyImpactPersistence } from "../dependency/application/dependencyImpactPersistence";
 import { createNovelBrainServer } from "../http/server";
 import type { ApiDependencies } from "../http/routes";
 
 export function createInMemoryEngineDependencies(): ApiDependencies {
   const commitTransaction = new InMemoryCommitTransaction();
+  const dependencyImpactPersistence = createInMemoryDependencyImpactPersistence();
   return {
     novels: commitTransaction.serializeRepository(new InMemoryRepository<Novel>()),
     scenes: commitTransaction.scenes,
@@ -28,6 +30,7 @@ export function createInMemoryEngineDependencies(): ApiDependencies {
       foundationPersistence: createInMemoryNarrativeProposalPersistence(),
       runPersistence: createInMemoryRunOrchestrationPersistence(),
       attentionPersistence: createInMemoryAttentionDispositionPersistence(),
+      dependencyImpactPersistence,
       runtime: new DeterministicFoundationRuntime(),
     },
   };

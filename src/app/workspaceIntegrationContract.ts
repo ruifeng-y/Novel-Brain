@@ -4,7 +4,7 @@ import type {
   FoundationWorkspaceQueryContract,
   FoundationWorkspaceView,
 } from "../story/application/foundationWorkspaceContract";
-import type { RecallItem } from "../recall/projection/recallItemProjection";
+import type { RecallAttentionItem } from "./recallAttentionSource";
 import type { AttentionDispositionRecord } from "../recall/attention/attentionDisposition";
 import type { ProductionRunStatus, ProductionRunStepState } from "../production/domain/productionRun";
 import type { SourceReference } from "../shared/domain/observationSource";
@@ -19,7 +19,7 @@ export interface WorkspaceRunProjection {
 
 export interface WorkspaceAttentionProjection {
   readonly novelId: string;
-  readonly items: readonly RecallItem[];
+  readonly items: readonly RecallAttentionItem[];
   readonly dispositions: readonly AttentionDispositionRecord[];
 }
 
