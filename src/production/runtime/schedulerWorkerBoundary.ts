@@ -23,6 +23,7 @@ export interface SchedulerScheduleRequest {
   readonly run: ProductionRun;
   readonly attempt: ExecutionAttempt;
   readonly timeoutMs: number;
+  readonly runtimeRequest: RuntimeRequest;
 }
 
 export interface ScheduledWorkOrder extends SchedulerScheduleRequest {
@@ -529,6 +530,7 @@ export class ProductionSchedulerWorkerBoundary {
       run: state.run,
       attempt,
       timeoutMs: request.policy.timeoutMs,
+      runtimeRequest: request.runtimeRequest,
     });
     state.activeWork = order;
     const started = await this.executionPort.start({
