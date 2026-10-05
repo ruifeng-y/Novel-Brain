@@ -17,6 +17,7 @@ import {
   type ProductionRunExecutionPort,
   type ScheduleProductionRunExecutionInput,
 } from "../application/productionRunExecutionPort";
+import type { ScheduledProductionRunAttempt } from "../application/productionRunScheduler";
 
 export interface SchedulerScheduleRequest {
   readonly run: ProductionRun;
@@ -119,6 +120,41 @@ export type SchedulerWorkerExecutionResult =
       readonly finalRelation: ExecutionAttempt["relation"];
     };
 
+export interface SchedulerExecutionRecovery {
+  readonly run: ProductionRun;
+  readonly attempts: readonly ExecutionAttempt[];
+}
+
+function isTerminalAttempt(attempt: ExecutionAttempt): boolean {
+  return (
+    attempt.status === "succeeded" ||
+    attempt.status === "failed" ||
+    attempt.status === "cancelled"
+  );
+}
+
+function runtimeResultFromAttempt(attempt: ExecutionAttempt): RuntimeResult {
+  const evidence = attempt.runtimeEvidence;
+  if (!evidence) throw new Error(`Attempt ${attempt.id} has no runtime result`);
+  const data = evidence.data;
+  return {
+    taskId: data.taskId,
+    agentRole: data.agentRole,
+    modelPolicy: data.modelPolicy,
+    change: data.change,
+    basedOnVersionSet: data.basedOnVersionSet,
+  };
+}
+
+function workerErrorFromAttempt(attempt: ExecutionAttempt): WorkerExecutionError {
+  const evidence = attempt.failureEvidence;
+  if (!evidence) throw new Error(`Attempt ${attempt.id} has no failure evidence`);
+  return {
+    code: evidence.data.code,
+    message: evidence.data.message,
+    retryable: evidence.data.retryable,
+  };
+}
 export interface SchedulerWorkerExecutionCancellationReceipt {
   readonly executionKey: string;
   readonly disposition: LongRunningProcessCancellationReceipt["disposition"];
@@ -269,6 +305,52 @@ export class ProductionSchedulerWorkerBoundary {
     };
   }
 
+  async resume(
+    request: SchedulerExecutionRequest,
+    recovery: SchedulerExecutionRecovery,
+  ): Promise<SchedulerWorkerExecutionResult> {
+    requireNonEmpty(request.stepId, "stepId");
+    requireNonEmpty(request.executionKey, "executionKey");
+    requireNonEmpty(request.process.id, "process.id");
+    requirePositiveInteger(request.policy.timeoutMs, "timeoutMs");
+    requirePositiveInteger(request.policy.maxAttempts, "maxAttempts");
+    if (recovery.run.id !== request.run.id) {
+      throw new Error("recovery Production Run does not match the request");
+    }
+    const stepState = recovery.run.stepStates.find(candidate => candidate.stepId === request.stepId);
+    if (!stepState) throw new Error("unknown run step");
+    if (
+      recovery.attempts.length === 0 ||
+      recovery.attempts.map(attempt => attempt.id).join("\n") !==
+        stepState.attemptIds.join("\n")
+    ) {
+      throw new Error("recovery Attempt history does not match the Production Run");
+    }
+    if (this.states.has(request.executionKey)) {
+      throw new Error(`execution identity ${request.executionKey} is already active`);
+    }
+
+    const recoveredProcess = await this.options.processBoundary.observe(request.process.id);
+    const processReady =
+      recoveredProcess.phase === "terminal"
+        ? Promise.resolve()
+        : this.options.processBoundary.markRunning(request.process.id);
+    const state: ExecutionState = {
+      controller: new AbortController(),
+      processId: request.process.id,
+      attempts: [...recovery.attempts],
+      run: recovery.run,
+      cancelledWorkIds: new Set(),
+      cancellationRequested: false,
+    };
+    this.states.set(request.executionKey, state);
+    const execution = this.run(request, state, processReady).finally(() => {
+      state.activeWork = undefined;
+    });
+    state.execution = execution;
+    return execution;
+  }
+
   private async run(
     request: SchedulerExecutionRequest,
     state: ExecutionState,
@@ -276,83 +358,125 @@ export class ProductionSchedulerWorkerBoundary {
   ): Promise<SchedulerWorkerExecutionResult> {
     await processReady;
     const executionPort = this.executionPort;
-    let relation: ScheduleProductionRunExecutionInput["relation"] = "initial";
-    let previousAttempt: ExecutionAttempt | undefined;
+    let pendingAttempt = state.attempts.at(-1);
+    if (pendingAttempt?.status === "succeeded") {
+      const runtimeResult = runtimeResultFromAttempt(pendingAttempt);
+      const process = await this.options.processBoundary.observe(request.process.id);
+      if (process.phase !== "terminal") {
+        await this.options.processBoundary.complete(request.process.id, {
+          status: "succeeded",
+          value: runtimeResult,
+        });
+      }
+      return {
+        status: "succeeded",
+        runtimeResult,
+        run: state.run,
+        attempts: state.attempts,
+        finalRelation: pendingAttempt.relation,
+      };
+    }
+    if (pendingAttempt?.status === "cancelled") {
+      const reason = pendingAttempt.cancellationReason ?? "cancelled";
+      const process = await this.options.processBoundary.observe(request.process.id);
+      if (process.phase !== "terminal") {
+        await this.options.processBoundary.complete(request.process.id, { status: "cancelled" });
+      }
+      return {
+        status: "cancelled",
+        reason,
+        run: state.run,
+        attempts: state.attempts,
+        finalRelation: pendingAttempt.relation,
+      };
+    }
+
     let lastError: WorkerExecutionError = {
       code: "worker-not-executed",
       message: "worker did not execute",
       retryable: false,
     };
-
-    for (let primaryAttempt = 0; primaryAttempt < request.policy.maxAttempts; primaryAttempt += 1) {
-      relation = primaryAttempt === 0 ? "initial" : "retry";
-      const scheduled = await executionPort.schedule({
-        run: state.run,
-        runPlanRevision: request.runPlanRevision,
-        generationTask: request.generationTask,
-        stepId: request.stepId,
-        executionKey: request.executionKey,
-        routingDecision: request.routingDecision,
-        createdAt: this.options.now?.() ?? new Date(),
-        relation,
-        ...(previousAttempt ? { previousAttempt } : {}),
-      });
-      state.run = scheduled.run;
-      state.attempts.push(scheduled.attempt);
-      previousAttempt = scheduled.attempt;
-
-      const order = await this.options.scheduler.schedule({
-        run: state.run,
-        attempt: scheduled.attempt,
-        timeoutMs: request.policy.timeoutMs,
-      });
-      state.activeWork = order;
-      const outcome = await this.executeAttempt(order, state, this.options.worker);
-
-      if (outcome.status === "cancelled") {
-        const transition = await this.recordCancellation(request, state, outcome.reason);
-        return this.cancelledResult(transition, state, outcome.reason);
-      }
-      if (outcome.status === "succeeded") {
-        const transition = executionPort.succeed({
-          run: state.run,
-          stepId: request.stepId,
-          attempt: state.attempts.at(-1) ?? scheduled.attempt,
-          runtimeRequest: request.runtimeRequest,
-          runtimeResult: outcome.runtimeResult,
-          at: this.options.now?.() ?? new Date(),
-        });
-        state.run = transition.run;
-        state.attempts[state.attempts.length - 1] = transition.attempt;
-        await this.options.processBoundary.complete(request.process.id, {
-          status: "succeeded",
-          value: outcome.runtimeResult,
-        });
+    if (pendingAttempt?.status === "failed") {
+      lastError = workerErrorFromAttempt(pendingAttempt);
+      if (
+        pendingAttempt.relation === "fallback" ||
+        !lastError.retryable ||
+        state.attempts.filter(attempt => attempt.relation !== "fallback").length >=
+          request.policy.maxAttempts
+      ) {
+        const process = await this.options.processBoundary.observe(request.process.id);
+        if (process.phase !== "terminal") {
+          await this.options.processBoundary.complete(request.process.id, {
+            status: "failed",
+            error: lastError.message,
+          });
+        }
         return {
-          status: "succeeded",
-          runtimeResult: outcome.runtimeResult,
-          run: transition.run,
+          status: "failed",
+          error: lastError,
+          run: state.run,
           attempts: state.attempts,
-          finalRelation: transition.attempt.relation,
+          finalRelation: pendingAttempt.relation,
         };
       }
+      pendingAttempt = undefined;
+    }
 
-      lastError = outcome.error;
-      const transition = executionPort.fail({
-        run: state.run,
-        stepId: request.stepId,
-        attempt: state.attempts.at(-1) ?? scheduled.attempt,
-        failure: {
-          code: outcome.error.code,
-          message: outcome.error.message,
-          retryable: outcome.error.retryable,
-        },
-        at: this.options.now?.() ?? new Date(),
-      });
-      state.run = transition.run;
-      state.attempts[state.attempts.length - 1] = transition.attempt;
-      previousAttempt = transition.attempt;
-      if (!outcome.error.retryable || primaryAttempt === request.policy.maxAttempts - 1) break;
+    let pendingPrimary =
+      pendingAttempt !== undefined && pendingAttempt.relation !== "fallback"
+        ? pendingAttempt
+        : undefined;
+    if (pendingAttempt?.relation === "fallback") {
+      const outcome = await this.executeExistingAttempt(request, state, pendingAttempt, this.options.fallbackWorker ?? this.options.worker);
+      return this.recordAttemptOutcome(request, state, outcome);
+    }
+
+    let primaryCompleted = state.attempts.filter(
+      attempt => attempt.relation !== "fallback" && isTerminalAttempt(attempt),
+    ).length;
+    let previousAttempt = state.attempts.at(-1);
+    let executePending = pendingPrimary !== undefined;
+
+    while (executePending || primaryCompleted < request.policy.maxAttempts) {
+      let scheduled: ScheduledProductionRunAttempt;
+      if (pendingPrimary) {
+        scheduled = {
+          run: state.run,
+          attempt: pendingPrimary,
+          generationTask: request.generationTask,
+        };
+        pendingPrimary = undefined;
+        executePending = false;
+      } else {
+        const relation: ScheduleProductionRunExecutionInput["relation"] =
+          primaryCompleted === 0 ? "initial" : "retry";
+        scheduled = await executionPort.schedule({
+          run: state.run,
+          runPlanRevision: request.runPlanRevision,
+          generationTask: request.generationTask,
+          stepId: request.stepId,
+          executionKey: request.executionKey,
+          routingDecision: request.routingDecision,
+          createdAt: this.options.now?.() ?? new Date(),
+          relation,
+          ...(previousAttempt ? { previousAttempt } : {}),
+        });
+        state.run = scheduled.run;
+        state.attempts.push(scheduled.attempt);
+      }
+
+      const outcome = await this.executeExistingAttempt(
+        request,
+        state,
+        scheduled.attempt,
+        this.options.worker,
+      );
+      primaryCompleted += 1;
+      const terminal = await this.recordAttemptOutcome(request, state, outcome);
+      if (terminal.status !== "failed") return terminal;
+      lastError = terminal.error;
+      previousAttempt = state.attempts.at(-1);
+      if (!lastError.retryable || primaryCompleted >= request.policy.maxAttempts) break;
     }
 
     if (
@@ -360,7 +484,6 @@ export class ProductionSchedulerWorkerBoundary {
       this.options.fallbackWorker &&
       lastError.retryable
     ) {
-      relation = "fallback";
       const scheduled = await executionPort.schedule({
         run: state.run,
         runPlanRevision: request.runPlanRevision,
@@ -369,63 +492,18 @@ export class ProductionSchedulerWorkerBoundary {
         executionKey: request.executionKey,
         routingDecision: request.fallbackRoutingDecision ?? request.routingDecision,
         createdAt: this.options.now?.() ?? new Date(),
-        relation,
+        relation: "fallback",
         ...(previousAttempt ? { previousAttempt } : {}),
       });
       state.run = scheduled.run;
       state.attempts.push(scheduled.attempt);
-      previousAttempt = scheduled.attempt;
-      const order = await this.options.scheduler.schedule({
-        run: state.run,
-        attempt: scheduled.attempt,
-        timeoutMs: request.policy.timeoutMs,
-      });
-      state.activeWork = order;
-      const outcome = await this.executeAttempt(order, state, this.options.fallbackWorker);
-
-      if (outcome.status === "cancelled") {
-        const transition = await this.recordCancellation(request, state, outcome.reason);
-        return this.cancelledResult(transition, state, outcome.reason);
-      }
-      if (outcome.status === "succeeded") {
-        const transition = executionPort.succeed({
-          run: state.run,
-          stepId: request.stepId,
-          attempt: state.attempts.at(-1) ?? scheduled.attempt,
-          runtimeRequest: request.runtimeRequest,
-          runtimeResult: outcome.runtimeResult,
-          at: this.options.now?.() ?? new Date(),
-        });
-        state.run = transition.run;
-        state.attempts[state.attempts.length - 1] = transition.attempt;
-        await this.options.processBoundary.complete(request.process.id, {
-          status: "succeeded",
-          value: outcome.runtimeResult,
-        });
-        return {
-          status: "succeeded",
-          runtimeResult: outcome.runtimeResult,
-          run: transition.run,
-          attempts: state.attempts,
-          finalRelation: transition.attempt.relation,
-        };
-      }
-
-      lastError = outcome.error;
-      const transition = executionPort.fail({
-        run: state.run,
-        stepId: request.stepId,
-        attempt: state.attempts.at(-1) ?? scheduled.attempt,
-        failure: {
-          code: outcome.error.code,
-          message: outcome.error.message,
-          retryable: outcome.error.retryable,
-        },
-        at: this.options.now?.() ?? new Date(),
-      });
-      state.run = transition.run;
-      state.attempts[state.attempts.length - 1] = transition.attempt;
-      previousAttempt = transition.attempt;
+      const outcome = await this.executeExistingAttempt(
+        request,
+        state,
+        scheduled.attempt,
+        this.options.fallbackWorker,
+      );
+      return this.recordAttemptOutcome(request, state, outcome);
     }
 
     await this.options.processBoundary.complete(request.process.id, {
@@ -438,6 +516,88 @@ export class ProductionSchedulerWorkerBoundary {
       run: state.run,
       attempts: state.attempts,
       finalRelation: state.attempts.at(-1)?.relation ?? "initial",
+    };
+  }
+
+  private async executeExistingAttempt(
+    request: SchedulerExecutionRequest,
+    state: ExecutionState,
+    attempt: ExecutionAttempt,
+    selectedWorker: WorkerAdapter,
+  ): Promise<WorkerExecutionResult> {
+    const order = await this.options.scheduler.schedule({
+      run: state.run,
+      attempt,
+      timeoutMs: request.policy.timeoutMs,
+    });
+    state.activeWork = order;
+    const started = await this.executionPort.start({
+      run: state.run,
+      stepId: request.stepId,
+      attempt,
+      at: this.options.now?.() ?? new Date(),
+    });
+    state.run = started.run;
+    const index = state.attempts.findIndex(candidate => candidate.id === started.attempt.id);
+    if (index < 0) throw new Error("scheduled Attempt is missing from recovery history");
+    state.attempts[index] = started.attempt;
+    return this.executeAttempt(order, state, selectedWorker);
+  }
+
+  private async recordAttemptOutcome(
+    request: SchedulerExecutionRequest,
+    state: ExecutionState,
+    outcome: WorkerExecutionResult,
+  ): Promise<SchedulerWorkerExecutionResult> {
+    const attempt = state.attempts.at(-1);
+    if (!attempt) throw new Error("Attempt history is empty");
+    if (outcome.status === "cancelled") {
+      const transition = await this.recordCancellation(request, state, outcome.reason);
+      return this.cancelledResult(transition, state, outcome.reason);
+    }
+    if (outcome.status === "succeeded") {
+      const transition = await this.executionPort.succeed({
+        run: state.run,
+        stepId: request.stepId,
+        attempt,
+        runtimeRequest: request.runtimeRequest,
+        runtimeResult: outcome.runtimeResult,
+        at: this.options.now?.() ?? new Date(),
+      });
+      state.run = transition.run;
+      state.attempts[state.attempts.length - 1] = transition.attempt;
+      await this.options.processBoundary.complete(request.process.id, {
+        status: "succeeded",
+        value: outcome.runtimeResult,
+      });
+      return {
+        status: "succeeded",
+        runtimeResult: outcome.runtimeResult,
+        run: transition.run,
+        attempts: state.attempts,
+        finalRelation: transition.attempt.relation,
+      };
+    }
+
+    const transition = await this.executionPort.fail({
+      run: state.run,
+      stepId: request.stepId,
+      attempt,
+      failure: {
+        code: outcome.error.code,
+        message: outcome.error.message,
+        retryable: outcome.error.retryable,
+      },
+      at: this.options.now?.() ?? new Date(),
+    });
+    state.run = transition.run;
+    state.attempts[state.attempts.length - 1] = transition.attempt;
+    return {
+      status: "failed",
+      error: outcome.error,
+      run: transition.run,
+      attempts: state.attempts,
+      finalRelation: transition.attempt.relation,
     };
   }
 
@@ -510,7 +670,7 @@ export class ProductionSchedulerWorkerBoundary {
     reason: string,
   ): Promise<{ run: ProductionRun; attempt: ExecutionAttempt }> {
     const executionPort = this.executionPort;
-    const transition = executionPort.cancel({
+    const transition = await executionPort.cancel({
       run: state.run,
       stepId: request.stepId,
       attempt: state.attempts.at(-1) as ExecutionAttempt,

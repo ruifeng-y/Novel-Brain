@@ -20,6 +20,8 @@ import {
   type ScheduledProductionRunAttempt,
 } from "./productionRunScheduler";
 
+export type MaybePromise<T> = T | Promise<T>;
+
 export interface ScheduleProductionRunExecutionInput {
   readonly run: ProductionRun;
   readonly runPlanRevision: RunPlanRevision;
@@ -35,6 +37,13 @@ export interface ScheduleProductionRunExecutionInput {
 export interface ProductionRunExecutionTransition {
   readonly run: ProductionRun;
   readonly attempt: ExecutionAttempt;
+}
+
+export interface StartProductionRunExecutionInput {
+  readonly run: ProductionRun;
+  readonly stepId: string;
+  readonly attempt: ExecutionAttempt;
+  readonly at: Date;
 }
 
 export interface CompleteProductionRunExecutionInput {
@@ -64,10 +73,11 @@ export interface CancelProductionRunExecutionInput {
 }
 
 export interface ProductionRunExecutionPort {
-  schedule(input: ScheduleProductionRunExecutionInput): ScheduledProductionRunAttempt;
-  succeed(input: CompleteProductionRunExecutionInput): ProductionRunExecutionTransition;
-  fail(input: FailProductionRunExecutionInput): ProductionRunExecutionTransition;
-  cancel(input: CancelProductionRunExecutionInput): ProductionRunExecutionTransition;
+  schedule(input: ScheduleProductionRunExecutionInput): MaybePromise<ScheduledProductionRunAttempt>;
+  start(input: StartProductionRunExecutionInput): MaybePromise<ProductionRunExecutionTransition>;
+  succeed(input: CompleteProductionRunExecutionInput): MaybePromise<ProductionRunExecutionTransition>;
+  fail(input: FailProductionRunExecutionInput): MaybePromise<ProductionRunExecutionTransition>;
+  cancel(input: CancelProductionRunExecutionInput): MaybePromise<ProductionRunExecutionTransition>;
 }
 
 function record(
@@ -84,10 +94,13 @@ function record(
 
 export const productionRunExecutionPort: ProductionRunExecutionPort = {
   schedule: input => scheduleProductionRunAttempt(input),
+  start: input => ({
+    run: input.run,
+    attempt: startExecutionAttempt(input.attempt, input.at),
+  }),
   succeed: input => {
-    const started = startExecutionAttempt(input.attempt, input.at);
     const terminal = completeExecutionAttempt({
-      attempt: started,
+      attempt: input.attempt,
       runtimeRequest: input.runtimeRequest,
       runtimeResult: input.runtimeResult,
       completedAt: input.at,
@@ -95,9 +108,8 @@ export const productionRunExecutionPort: ProductionRunExecutionPort = {
     return record(input.run, input.stepId, terminal, input.at);
   },
   fail: input => {
-    const started = startExecutionAttempt(input.attempt, input.at);
     const terminal = failExecutionAttempt({
-      attempt: started,
+      attempt: input.attempt,
       failure: input.failure,
       failedAt: input.at,
       ...(input.retryReason === undefined ? {} : { retryReason: input.retryReason }),
@@ -105,9 +117,8 @@ export const productionRunExecutionPort: ProductionRunExecutionPort = {
     return record(input.run, input.stepId, terminal, input.at);
   },
   cancel: input => {
-    const started = startExecutionAttempt(input.attempt, input.at);
     const terminal = cancelExecutionAttempt({
-      attempt: started,
+      attempt: input.attempt,
       reason: input.reason,
       cancelledAt: input.at,
     });
