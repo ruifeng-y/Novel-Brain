@@ -30,6 +30,7 @@ import {
   ReviewDecisionBindingError,
   type ReviewDecisionStore,
 } from "../app/reviewDecisionService";
+import { createCommitGateQuery } from "../app/commitGateQuery";
 import type { FoundationWorkspaceFocus } from "../story/application/foundationWorkspaceContract";
 import type { FoundationGenerationOptions } from "../story/application/foundationEntryService";
 import {
@@ -263,6 +264,42 @@ const runValidationRequestSchema = z.object({
   mustPreserve: z.array(z.string()).default([]),
 });
 
+/** A structured query field carried as JSON, rejected as a 400 when malformed. */
+function jsonArrayField<T>(element: z.ZodType<T>, label: string) {
+  return z.string().transform((value, context): readonly T[] => {
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(value);
+    } catch {
+      context.addIssue({ code: "custom", message: `${label} must be JSON` });
+      return [];
+    }
+    const result = z.array(element).safeParse(parsed);
+    if (!result.success) {
+      context.addIssue({ code: "custom", message: `${label} must be a JSON array of the expected shape` });
+      return [];
+    }
+    return result.data;
+  });
+}
+
+const booleanQueryFlag = z.enum(["true", "false"]).default("false");
+
+const commitGateRequestSchema = z.object({
+  validationRunIds: z.string().optional(),
+  unresolvedConflict: booleanQueryFlag,
+  stale: booleanQueryFlag,
+  occConflict: booleanQueryFlag,
+  targetInvariantViolations: jsonArrayField(
+    targetInvariantViolationSchema,
+    "targetInvariantViolations",
+  ).optional(),
+  approvalRequirements: jsonArrayField(
+    approvalScopeRequirementSchema,
+    "approvalRequirements",
+  ).optional(),
+});
+
 /**
  * The transport mirrors the ReviewDecision preconditions so a malformed
  * decision is a 400 instead of reaching the domain and failing as a 500.
@@ -321,6 +358,7 @@ const routeContracts = {
   validationRun: "validation.query.validation-run",
   recordReviewDecision: "approval.command.record-review-decision",
   approvalEvidence: "approval.query.approval-evidence",
+  commitGate: "commit.query.commit-gate",
   listNovelEvents: "commit.query.commit-evidence",
   workspaceFocus: "foundation.query.workspace-focus",
   focusResolution: "workspace.query.focus-resolution",
@@ -480,6 +518,11 @@ export function registerNovelBrainRoutes(
   const reviewDecisions = createReviewDecisionService({
     reviews: dependencies.reviews,
     changeSets: dependencies.changeSets,
+  });
+  const commitGate = createCommitGateQuery({
+    changeSets: dependencies.changeSets,
+    validations: dependencies.validations,
+    reviews: dependencies.reviews,
   });
 
   app.post("/novels", async (request, reply) => {
@@ -935,6 +978,51 @@ export function registerNovelBrainRoutes(
       );
     },
   );
+
+  /**
+   * The commit gate is evaluated by the same function the commit uses, so this
+   * preview and the commit report the same gate over the same artefacts. The
+   * five conditions are reported separately and never collapsed into one
+   * indicator. The authorization resource is the workspace of the revision.
+   */
+  app.get("/change-sets/:changeSetId/revisions/:revisionId/commit-gate", async (request, reply) => {
+    const params = z
+      .object({ changeSetId: z.string().min(1), revisionId: z.string().min(1) })
+      .parse(request.params);
+    const query = commitGateRequestSchema.parse(request.query);
+    const revision = await changeSetRevisions.getRevision({
+      changeSetId: params.changeSetId,
+      revisionId: params.revisionId,
+    });
+    if (!revision) {
+      return reply.code(404).send({ error: "Change Set Revision not found" });
+    }
+    return pipeline.execute(
+      routeContracts.commitGate,
+      routeBoundaryContext(request, revision.novelId),
+      routeBoundaryInput(request),
+      async () => {
+        const runIds = (query.validationRunIds ?? "")
+          .split(",")
+          .map(value => value.trim())
+          .filter(value => value.length > 0);
+        const gate = await commitGate.evaluate({
+          changeSetId: params.changeSetId,
+          revisionId: params.revisionId,
+          ...(runIds.length === 0 ? {} : { validationRunIds: runIds }),
+          currentRevisionFacts: {
+            unresolvedConflict: query.unresolvedConflict === "true",
+            stale: query.stale === "true",
+          },
+          occConflict: query.occConflict === "true",
+          targetInvariantViolations: query.targetInvariantViolations ?? [],
+          approvalRequirements: query.approvalRequirements ?? [],
+        });
+        if (!gate) return reply.code(404).send({ error: "Change Set Revision not found" });
+        return reply.code(200).send(gate);
+      },
+    );
+  });
 
   app.get("/novels/:novelId/events", async request => {
     const novelId = requiredPathParameter(request, "novelId");

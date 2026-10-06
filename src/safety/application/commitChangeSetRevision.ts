@@ -211,7 +211,12 @@ function scopeMatchesTarget(scope: ApprovalScope, address: TargetAddress): boole
   );
 }
 
-function validationOutcomeOf(runs: readonly ValidationRun[]): "pass" | "fail" | "needs_review" {
+/**
+ * Shared with the commit gate query so a preview and a commit derive the same
+ * facts from the same runs. Not a second gate evaluation: the gate itself is
+ * still evaluated only by `evaluateCommitGate`.
+ */
+export function validationOutcomeOf(runs: readonly ValidationRun[]): "pass" | "fail" | "needs_review" {
   if (runs.some(run => run.outcome === "fail")) return "fail";
   if (runs.some(run => run.outcome === "needs_review")) return "needs_review";
   return "pass";
@@ -221,7 +226,8 @@ function reviewDecisionFact(decision: ReviewDecision["decision"]): CommitGateRev
   return decision;
 }
 
-function aggregateApprovalState(decisions: readonly ReviewDecision[]): CommitGateApprovalState {
+/** Shared with the commit gate query; see `validationOutcomeOf`. */
+export function aggregateApprovalState(decisions: readonly ReviewDecision[]): CommitGateApprovalState {
   const effective = [...decisions].sort((left, right) => {
     const byDate = left.createdAt.getTime() - right.createdAt.getTime();
     return byDate !== 0 ? byDate : left.id.localeCompare(right.id);
@@ -514,7 +520,8 @@ function strictestRequirement(
   })[0]!;
 }
 
-function approvalScopeFacts(
+/** Shared with the commit gate query; see `validationOutcomeOf`. */
+export function approvalScopeFacts(
   revision: ChangeSetRevision,
   reviewDecisions: readonly ReviewDecision[],
   requirements: readonly CommitChangeSetRevisionApprovalRequirement[],

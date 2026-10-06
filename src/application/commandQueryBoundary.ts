@@ -186,6 +186,13 @@ export const applicationCapabilityBoundaries = {
         effect: "read",
         resultChannel: "query-result",
       },
+      {
+        id: "commit.query.commit-gate",
+        capability: "commit",
+        kind: "query",
+        effect: "read",
+        resultChannel: "query-result",
+      },
     ],
   },
   run: {
