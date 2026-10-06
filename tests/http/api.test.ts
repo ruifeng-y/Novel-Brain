@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
 import { createInMemoryEngineDependencies } from "../../src/app/composition";
+import { createChangeSetRevisionService } from "../../src/app/changeSetRevisionService";
+import { createValidationRunService } from "../../src/app/validationRunService";
+import { createReviewDecisionService } from "../../src/app/reviewDecisionService";
 import { createNovelBrainServer } from "../../src/http/server";
 import {
   createCandidate,
@@ -65,12 +68,21 @@ function scopeFor(change: CandidateAtomicChange) {
   };
 }
 
-function commitPayload(
+/**
+ * W3 boundary: a commit references real artefacts by id. This helper performs
+ * the stages an author performs — adopt the candidate into a persisted Change
+ * Set Revision, run validation against that revision, record an approving
+ * decision — and returns the commit request body that references them.
+ */
+async function prepareCommit(
+  dependencies: ReturnType<typeof createInMemoryEngineDependencies>,
   candidate: Candidate,
   options: {
+    changeSetId: string;
     commitId?: string;
     revisionId?: string;
     validationId?: string;
+    reviewDecisionId?: string;
     mustPreserve?: readonly string[];
     unresolvedConflict?: boolean;
     stale?: boolean;
@@ -78,38 +90,66 @@ function commitPayload(
       | string
       | { message: string; evidenceReferences?: readonly string[] }
     )[];
-    requiredApproval?: boolean;
-  } = {},
+  },
 ) {
-  const validationId = options.validationId ?? `validation-${candidate.id}`;
-  return {
-    commitId: options.commitId ?? `commit-${candidate.id}`,
-    changeSetRevisionId: options.revisionId ?? `change-set-${candidate.id}-r1`,
-    candidateId: candidate.id,
-    candidateSource: {
-      version: `${candidate.id}:source-v1`,
-      hash: hashContent(`${candidate.id}:source`),
-    },
+  const revisionId = options.revisionId ?? `change-set-${candidate.id}-r1`;
+  const revision = await createChangeSetRevisionService({
+    changeSets: dependencies.changeSets,
+  }).adoptCandidate({
+    candidate,
+    changeSetId: options.changeSetId,
+    revisionId,
+    createdAt: now,
+  });
+  const run = await createValidationRunService({
+    changeSets: dependencies.changeSets,
+    validations: dependencies.validations,
+    scenes: dependencies.scenes,
+    candidates: dependencies.candidates,
+  }).runValidation({
+    changeSetId: options.changeSetId,
+    revisionId,
+    validationId: options.validationId ?? `validation-${candidate.id}`,
     planVersionId: "plan-v1",
-    validationId,
+    candidateId: candidate.id,
     mustPreserve: options.mustPreserve ?? [],
-    currentRevisionFacts: {
-      unresolvedConflict: options.unresolvedConflict ?? false,
-      stale: options.stale ?? false,
-    },
-    targetInvariantViolations: options.targetInvariantViolations ?? [],
-    requiredApproval: options.requiredApproval ?? false,
-    approvalScopeRequirements: atomicChanges(candidate.change).map(change => ({
-      approvalScope: scopeFor(change),
-      requirement: "t12-basic-approval",
-      requirementLevel: "not_required" as const,
-    })),
-    reviewDecision: {
-      id: `review-${candidate.id}`,
-      decidedBy: "human" as const,
-      actorId: "author-1",
-      reason: "",
-      evidenceReferences: [validationId],
+    createdAt: now,
+  });
+  const decision = await createReviewDecisionService({
+    reviews: dependencies.reviews,
+    changeSets: dependencies.changeSets,
+  }).recordReview({
+    reviewDecisionId: options.reviewDecisionId ?? `review-${candidate.id}`,
+    changeSetId: options.changeSetId,
+    revisionId,
+    approvalScope: scopeFor(atomicChanges(candidate.change)[0]!),
+    decision: "approve",
+    decidedBy: "human",
+    actorId: "author-1",
+    reason: "",
+    evidenceReferences: [run.id],
+    createdAt: now,
+  });
+
+  return {
+    revision,
+    run,
+    decision,
+    body: {
+      commitId: options.commitId ?? `commit-${candidate.id}`,
+      changeSetRevisionId: revisionId,
+      validationRunIds: [run.id],
+      reviewDecisionIds: [decision.id],
+      currentRevisionFacts: {
+        unresolvedConflict: options.unresolvedConflict ?? false,
+        stale: options.stale ?? false,
+      },
+      targetInvariantViolations: options.targetInvariantViolations ?? [],
+      approvalRequirements: atomicChanges(candidate.change).map(change => ({
+        approvalScope: scopeFor(change),
+        requirement: "t12-basic-approval",
+        requirementLevel: "not_required" as const,
+      })),
     },
   };
 }
@@ -243,13 +283,15 @@ describe("core engine API", () => {
     });
     const candidate = (await dependencies.candidates.findById("candidate-loop"))!;
 
+    const prepared = await prepareCommit(dependencies, candidate, {
+      changeSetId: "change-set-loop",
+      revisionId: "change-set-loop-r1",
+      commitId: "commit-loop",
+    });
     const response = await app.inject({
       method: "POST",
       url: "/change-sets/change-set-loop/commit",
-      payload: commitPayload(candidate, {
-        revisionId: "change-set-loop-r1",
-        commitId: "commit-loop",
-      }),
+      payload: prepared.body,
     });
 
     expect(response.statusCode).toBe(201);
@@ -277,7 +319,7 @@ describe("core engine API", () => {
     await app.close();
   });
 
-  it("returns validation failure without selecting the candidate", async () => {
+  it("reports a failed validation as a blocked gate without selecting the candidate", async () => {
     const { app, dependencies } = server();
     const candidate = await seedCandidate(dependencies, {
       candidateId: "candidate-invalid",
@@ -288,21 +330,28 @@ describe("core engine API", () => {
       },
     });
 
+    const prepared = await prepareCommit(dependencies, candidate, {
+      changeSetId: "change-set-invalid",
+      revisionId: "change-set-invalid-r1",
+      validationId: "validation-invalid",
+      mustPreserve: ["Northern Sect"],
+    });
     const response = await app.inject({
       method: "POST",
       url: "/change-sets/change-set-invalid/commit",
-      payload: commitPayload(candidate, {
-        revisionId: "change-set-invalid-r1",
-        validationId: "validation-invalid",
-        mustPreserve: ["Northern Sect"],
-      }),
+      payload: prepared.body,
     });
 
-    expect(response.statusCode).toBe(422);
+    // Validation is its own stage: the run carries the failure, and the commit
+    // is refused by the gate rather than by an inline validation step.
+    expect(response.statusCode).toBe(409);
+    expect(prepared.run.outcome).toBe("fail");
     expect(response.json()).toMatchObject({
-      changeSetRevisionId: "change-set-invalid-r1",
-      planVersionId: "plan-v1",
-      outcome: "fail",
+      error: "Commit Conflict",
+      gate: {
+        allowed: false,
+        validation: { ok: false },
+      },
     });
     expect((await dependencies.candidates.findById(candidate.id))?.status).toBe("generated");
     expect(await dependencies.narrativeCommits.listByNovel("novel-1")).toEqual([]);
@@ -363,21 +412,25 @@ describe("core engine API", () => {
       }),
     });
 
+    const preparedStructured = await prepareCommit(dependencies, structured, {
+      changeSetId: "change-set-structured",
+      revisionId: "change-set-structured-r1",
+      commitId: "commit-structured",
+    });
+    const preparedCanonical = await prepareCommit(dependencies, canonical, {
+      changeSetId: "change-set-canonical",
+      revisionId: "change-set-canonical-r1",
+      commitId: "commit-canonical",
+    });
     const structuredResponse = await app.inject({
       method: "POST",
       url: "/change-sets/change-set-structured/commit",
-      payload: commitPayload(structured, {
-        revisionId: "change-set-structured-r1",
-        commitId: "commit-structured",
-      }),
+      payload: preparedStructured.body,
     });
     const canonicalResponse = await app.inject({
       method: "POST",
       url: "/change-sets/change-set-canonical/commit",
-      payload: commitPayload(canonical, {
-        revisionId: "change-set-canonical-r1",
-        commitId: "commit-canonical",
-      }),
+      payload: preparedCanonical.body,
     });
 
     expect(structuredResponse.statusCode).toBe(201);
@@ -486,10 +539,13 @@ describe("core engine API", () => {
     const response = await app.inject({
       method: "POST",
       url: "/change-sets/change-set-composite/commit",
-      payload: commitPayload(candidate, {
-        revisionId: "change-set-composite-r1",
-        commitId: "commit-composite",
-      }),
+      payload: (
+        await prepareCommit(dependencies, candidate, {
+          changeSetId: "change-set-composite",
+          revisionId: "change-set-composite-r1",
+          commitId: "commit-composite",
+        })
+      ).body,
     });
 
     expect(response.statusCode).toBe(201);
@@ -523,18 +579,25 @@ describe("core engine API", () => {
     const response = await app.inject({
       method: "POST",
       url: "/change-sets/change-set-stale/commit",
-      payload: commitPayload(candidate, {
-        revisionId: "change-set-stale-r1",
-        commitId: "commit-stale",
-      }),
+      payload: (
+        await prepareCommit(dependencies, candidate, {
+          changeSetId: "change-set-stale",
+          revisionId: "change-set-stale-r1",
+          commitId: "commit-stale",
+        })
+      ).body,
     });
 
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({
       error: "Commit Conflict",
-      blockers: expect.arrayContaining([
-        expect.objectContaining({ type: "occ_conflict" }),
-      ]),
+      gate: {
+        allowed: false,
+        concurrency: { ok: false },
+        blockers: expect.arrayContaining([
+          expect.objectContaining({ type: "occ_conflict" }),
+        ]),
+      },
     });
     expect((await dependencies.scenes.findById("scene-1"))?.text).toBe("Author updated text");
     expect(await dependencies.eventStore.listByNovel("novel-1")).toEqual([]);
@@ -551,24 +614,31 @@ describe("core engine API", () => {
     const response = await app.inject({
       method: "POST",
       url: "/change-sets/change-set-invariant/commit",
-      payload: commitPayload(candidate, {
-        revisionId: "change-set-invariant-r1",
-        commitId: "commit-invariant",
-        targetInvariantViolations: [
-          {
-            message: "target invariant failed",
-            evidenceReferences: ["candidate-invariant:candidate-source-v1"],
-          },
-        ],
-      }),
+      payload: (
+        await prepareCommit(dependencies, candidate, {
+          changeSetId: "change-set-invariant",
+          revisionId: "change-set-invariant-r1",
+          commitId: "commit-invariant",
+          targetInvariantViolations: [
+            {
+              message: "target invariant failed",
+              evidenceReferences: ["candidate-invariant:candidate-source-v1"],
+            },
+          ],
+        })
+      ).body,
     });
 
     expect(response.statusCode).toBe(409);
     expect(response.json()).toMatchObject({
       error: "Commit Conflict",
-      blockers: expect.arrayContaining([
-        expect.objectContaining({ type: "invariant_violation" }),
-      ]),
+      gate: {
+        allowed: false,
+        invariant: { ok: false },
+        blockers: expect.arrayContaining([
+          expect.objectContaining({ type: "invariant_violation" }),
+        ]),
+      },
     });
     expect((await dependencies.scenes.findById("scene-1"))?.text).toContain("Northern Sect");
     expect(await dependencies.narrativeCommits.listByNovel("novel-1")).toEqual([]);
@@ -601,13 +671,15 @@ describe("core engine API", () => {
       } as typeof dependencies.commitTransaction,
     });
 
+    const prepared = await prepareCommit(dependencies, candidate, {
+      changeSetId: `change-set-${conflictType}`,
+      revisionId: `change-set-${conflictType}-r1`,
+      commitId: `commit-${conflictType}`,
+    });
     const response = await app.inject({
       method: "POST",
       url: `/change-sets/change-set-${conflictType}/commit`,
-      payload: commitPayload(candidate, {
-        revisionId: `change-set-${conflictType}-r1`,
-        commitId: `commit-${conflictType}`,
-      }),
+      payload: prepared.body,
     });
 
     expect(response.statusCode).toBe(409);
@@ -622,7 +694,7 @@ describe("core engine API", () => {
     await app.close();
   });
 
-  it("rejects duplicate targets through the domain invariant with controlled JSON and zero writes", async () => {
+  it("rejects duplicate targets at adoption with controlled JSON and zero writes", async () => {
     const { app, dependencies } = server();
     const candidate = await seedCandidate(dependencies, {
       candidateId: "candidate-duplicate-target",
@@ -635,13 +707,15 @@ describe("core engine API", () => {
       },
     });
 
+    // A Change Set Revision cannot address one target twice, and that is
+    // decided when the candidate is adopted, before any commit is attempted.
     const response = await app.inject({
       method: "POST",
-      url: "/change-sets/change-set-duplicate-target/commit",
-      payload: commitPayload(candidate, {
+      url: "/change-sets/change-set-duplicate-target/revisions",
+      payload: {
+        candidateId: candidate.id,
         revisionId: "change-set-duplicate-target-r1",
-        commitId: "commit-duplicate-target",
-      }),
+      },
     });
 
     expect(response.statusCode).toBe(409);

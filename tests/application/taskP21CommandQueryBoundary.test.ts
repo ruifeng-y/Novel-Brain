@@ -47,6 +47,7 @@ const expectedOperationIds = {
       "commit.query.commit-evidence",
       "commit.query.change-set-revision-diff",
       "commit.query.commit-gate",
+      "commit.query.commit-provenance",
     ],
   },
   run: {

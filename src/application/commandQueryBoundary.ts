@@ -193,6 +193,13 @@ export const applicationCapabilityBoundaries = {
         effect: "read",
         resultChannel: "query-result",
       },
+      {
+        id: "commit.query.commit-provenance",
+        capability: "commit",
+        kind: "query",
+        effect: "read",
+        resultChannel: "query-result",
+      },
     ],
   },
   run: {

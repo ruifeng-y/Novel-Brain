@@ -17,6 +17,7 @@ import {
   type CommitGateBlockerType,
   type CommitGateInvariantViolation,
   type CommitGateRequiredAction,
+  type CommitGateResult,
 } from "../safety/domain/commitGate";
 import { validationRunOf, ValidationBindingError, type StoredValidationRun } from "./validationRunService";
 import { reviewDecisionOf, type ReviewDecisionStore } from "./reviewDecisionService";
@@ -72,11 +73,12 @@ function conditionOf(
   });
 }
 
-function present(
-  allowed: boolean,
-  blockers: readonly CommitGateBlocker[],
-  requiredActions: readonly CommitGateRequiredAction[],
-) {
+/**
+ * The one presentation of a gate result. The preview and the commit's blocked
+ * response both use it, so a 409 reports exactly what the preview reported.
+ */
+export function presentCommitGate(result: CommitGateResult): CommitGatePresentation {
+  const { allowed, blockers, requiredActions } = result;
   return Object.freeze({
     revisionValidity: conditionOf(blockers, conditionBlockerTypes.revisionValidity),
     concurrency: conditionOf(blockers, conditionBlockerTypes.concurrency),
@@ -185,7 +187,7 @@ export function createCommitGateQuery(dependencies: {
         approvalScopes: approvalScopeFacts(revision, decisions, requirements),
       });
 
-      return present(gate.allowed, gate.blockers, gate.requiredActions);
+      return presentCommitGate(gate);
     },
   };
 }

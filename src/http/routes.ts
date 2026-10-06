@@ -30,7 +30,8 @@ import {
   ReviewDecisionBindingError,
   type ReviewDecisionStore,
 } from "../app/reviewDecisionService";
-import { createCommitGateQuery } from "../app/commitGateQuery";
+import { createCommitGateQuery, presentCommitGate } from "../app/commitGateQuery";
+import { createCommitProvenanceQuery } from "../app/commitProvenanceQuery";
 import type { FoundationWorkspaceFocus } from "../story/application/foundationWorkspaceContract";
 import type { FoundationGenerationOptions } from "../story/application/foundationEntryService";
 import {
@@ -54,19 +55,14 @@ import {
 } from "../production/domain/generationTask";
 import type { Candidate } from "../production/domain/candidate";
 import { createCandidate } from "../production/domain/candidate";
+import type { ValidationRun } from "../production/domain/validationRun";
 import { createChange, type Change } from "../production/domain/change";
 import type { ChangeSetRevisionRepository } from "../production/application/changeSetPersistence";
 import {
   createInitialChangeSetRevision,
   type ChangeSetRevision,
 } from "../production/domain/changeSetRevision";
-import { validateCandidate } from "../production/application/validateCandidate";
-import {
-  approvalScopeKey,
-  createReviewDecision,
-  type ApprovalScope,
-  type ReviewDecision,
-} from "../production/domain/reviewDecision";
+import type { ReviewDecision } from "../production/domain/reviewDecision";
 import { approveRunPlanRevision } from "../production/domain/runPlan";
 import type { CanonicalFact } from "../narrative/canon/domain/canonicalFact";
 import type { StateRecord } from "../narrative/state/domain/stateRecord";
@@ -212,17 +208,18 @@ const targetInvariantViolationSchema = z.union([
   }),
 ]);
 
+/**
+ * A commit references real artefacts by id. It carries no candidate, no
+ * client-supplied validation id, and no client-supplied review template: the
+ * validation runs and review decisions must already exist and belong to the
+ * addressed revision. `requiredApproval` is derived from the requirements
+ * rather than supplied, so the preview and the commit cannot disagree on it.
+ */
 const commitRequestSchema = z.object({
   commitId: z.string().min(1),
   changeSetRevisionId: z.string().min(1),
-  candidateId: z.string().min(1),
-  candidateSource: z.object({
-    version: z.string().min(1),
-    hash: z.string().min(1),
-  }),
-  planVersionId: z.string().min(1),
-  validationId: z.string().min(1),
-  mustPreserve: z.array(z.string().min(1)),
+  validationRunIds: z.array(z.string().min(1)).min(1),
+  reviewDecisionIds: z.array(z.string().min(1)).default([]),
   currentRevisionFacts: z.object({
     unresolvedConflict: z.boolean(),
     unresolvedConflictEvidenceReferences: z.array(z.string().min(1)).optional(),
@@ -230,18 +227,8 @@ const commitRequestSchema = z.object({
     staleEvidenceReferences: z.array(z.string().min(1)).optional(),
   }),
   targetInvariantViolations: z.array(targetInvariantViolationSchema),
-  requiredApproval: z.boolean(),
-  approvalScopeRequirements: z.array(approvalScopeRequirementSchema).min(1),
-  reviewDecision: z.object({
-    id: z.string().min(1),
-    decidedBy: z.enum(["human", "policy"]),
-    actorId: z.string().min(1),
-    reason: z.string(),
-    evidenceReferences: z.array(z.string().min(1)),
-    policyVersion: z.string().min(1).optional(),
-    decisionRule: z.string().min(1).optional(),
-  }),
-});
+  approvalRequirements: z.array(approvalScopeRequirementSchema).default([]),
+}).strict();
 
 const changeSetRevisionRequestSchema = z.object({
   candidateId: z.string().min(1),
@@ -371,6 +358,7 @@ const routeContracts = {
   recordReviewDecision: "approval.command.record-review-decision",
   approvalEvidence: "approval.query.approval-evidence",
   commitGate: "commit.query.commit-gate",
+  commitProvenance: "commit.query.commit-provenance",
   listNovelEvents: "commit.query.commit-evidence",
   workspaceFocus: "foundation.query.workspace-focus",
   focusResolution: "workspace.query.focus-resolution",
@@ -536,6 +524,12 @@ export function registerNovelBrainRoutes(
     validations: dependencies.validations,
     reviews: dependencies.reviews,
   });
+  const commitProvenance = createCommitProvenanceQuery({
+    commits: dependencies.narrativeCommits,
+    validations: dependencies.validations,
+    reviews: dependencies.reviews,
+    eventStore: dependencies.eventStore,
+  });
 
   app.post("/novels", async (request, reply) => {
     const identity = novelBodyIdentitySchema.parse(request.body);
@@ -672,61 +666,92 @@ export function registerNovelBrainRoutes(
     );
   });
 
+  /**
+   * A commit references real artefacts by id. Every referenced validation run
+   * and review decision must exist and belong to the addressed revision — the
+   * address is the pair (Change Set, revision) — so a mismatch is a conflict,
+   * never a silent substitution. The gate is evaluated again here with the same
+   * function the preview uses, because the current-state facts may have changed
+   * since the author looked. Canonical state still changes only through
+   * `commitChangeSetRevision`.
+   */
   app.post("/change-sets/:changeSetId/commit", async (request, reply) => {
     const params = z.object({ changeSetId: z.string().min(1) }).parse(request.params);
     const body = commitRequestSchema.parse(request.body);
-    const candidate = await dependencies.candidates.findById(body.candidateId);
-    if (!candidate) {
-      return reply.code(404).send({ error: "Not Found" });
+    const revision = await changeSetRevisions.getRevision({
+      changeSetId: params.changeSetId,
+      revisionId: body.changeSetRevisionId,
+    });
+    if (!revision) {
+      return reply.code(404).send({ error: "Change Set Revision not found" });
     }
     return pipeline.execute(
       routeContracts.commitChangeSetRevision,
-      routeBoundaryContext(request, candidate.novelId),
+      routeBoundaryContext(request, revision.novelId),
       routeBoundaryInput(request),
       async () => {
-        const now = new Date();
-        const atomicChanges =
-          candidate.change.type === "composite" ? candidate.change.changes : [candidate.change];
-        const sceneChange = atomicChanges.find(change =>
-          change.type === "text" || change.type === "local_text",
-        );
-        const scene =
-          sceneChange && (sceneChange.type === "text" || sceneChange.type === "local_text")
-            ? await dependencies.scenes.findById(sceneChange.sceneId)
-            : undefined;
-        if (sceneChange && !scene) {
-          return reply.code(409).send({ error: "Target scene not found" });
+        const referencedRevision = `${params.changeSetId}:${body.changeSetRevisionId}`;
+
+        // Resolved through the paired app entries: a run or decision is only
+        // accepted when it belongs to this (Change Set, revision).
+        const resolvedRuns: ValidationRun[] = [];
+        for (const validationRunId of body.validationRunIds) {
+          const run = await validationRuns.getValidation({
+            validationId: validationRunId,
+            changeSetId: params.changeSetId,
+            revisionId: body.changeSetRevisionId,
+          });
+          if (!run) {
+            return reply.code(409).send({
+              error: "Commit Conflict",
+              reason: `Validation run ${validationRunId} does not belong to revision ${referencedRevision}`,
+            });
+          }
+          resolvedRuns.push(run);
         }
 
-        const revision = await changeSetRevisions.adoptCandidate({
-          candidate,
-          changeSetId: params.changeSetId,
-          revisionId: body.changeSetRevisionId,
-          sourceReference: body.candidateSource,
-          createdAt: now,
-        });
+        const decisionsOfRevision = new Map(
+          (
+            await reviewDecisions.listForRevision({
+              changeSetId: params.changeSetId,
+              revisionId: body.changeSetRevisionId,
+            })
+          ).map(decision => [decision.id, decision] as const),
+        );
+        const resolvedDecisions: ReviewDecision[] = [];
+        for (const reviewDecisionId of body.reviewDecisionIds) {
+          const decision = decisionsOfRevision.get(reviewDecisionId);
+          if (!decision) {
+            return reply.code(409).send({
+              error: "Commit Conflict",
+              reason: `Review decision ${reviewDecisionId} does not belong to revision ${referencedRevision}`,
+            });
+          }
+          resolvedDecisions.push(decision);
+        }
 
-        const validation = validateCandidate({
-          validationId: body.validationId,
-          changeSetRevisionId: revision.revisionId,
-          planVersionId: body.planVersionId,
-          candidate,
-          scene,
-          mustPreserve: body.mustPreserve,
-          createdAt: now,
-        });
-        if (validation.outcome === "fail") return reply.code(422).send(validation.run);
-
-        const requirements = body.approvalScopeRequirements.map(
+        const approvalRequirements = body.approvalRequirements.map(
           (requirement): CommitChangeSetRevisionApprovalRequirement => requirement,
         );
-        const reviewDecisions = reviewsForRequirements({
-          revision,
-          requirements,
-          template: body.reviewDecision,
-          validationId: body.validationId,
-          createdAt: now,
+        // Derived, never client-supplied: the preview derives it the same way.
+        const requiredApproval = approvalRequirements.some(
+          requirement => requirement.requirementLevel !== "not_required",
+        );
+
+        const gate = await commitGate.evaluate({
+          changeSetId: params.changeSetId,
+          revisionId: body.changeSetRevisionId,
+          validationRunIds: body.validationRunIds,
+          currentRevisionFacts: body.currentRevisionFacts,
+          targetInvariantViolations: body.targetInvariantViolations,
+          approvalRequirements,
         });
+        if (!gate) {
+          return reply.code(404).send({ error: "Change Set Revision not found" });
+        }
+        if (!gate.allowed) {
+          return reply.code(409).send({ error: "Commit Conflict", gate });
+        }
 
         try {
           const commit = await commitChangeSetRevision({
@@ -734,13 +759,13 @@ export function registerNovelBrainRoutes(
             input: {
               commitId: body.commitId,
               changeSetRevision: revision,
-              validationRuns: [validation.run],
-              reviewDecisions,
+              validationRuns: resolvedRuns,
+              reviewDecisions: resolvedDecisions,
               currentRevisionFacts: body.currentRevisionFacts,
               targetInvariantViolations: body.targetInvariantViolations,
-              requiredApproval: body.requiredApproval,
-              approvalScopeRequirements: requirements,
-              now,
+              requiredApproval,
+              approvalScopeRequirements: approvalRequirements,
+              now: new Date(),
             },
           });
           return reply.code(201).send(commit);
@@ -748,8 +773,7 @@ export function registerNovelBrainRoutes(
           if (error instanceof CommitGateBlockedError) {
             return reply.code(409).send({
               error: "Commit Conflict",
-              blockers: error.gate.blockers,
-              requiredActions: error.gate.requiredActions,
+              gate: presentCommitGate(error.gate),
             });
           }
           if (error instanceof Error && error.message.startsWith("Stale dependency:")) {
@@ -1029,6 +1053,31 @@ export function registerNovelBrainRoutes(
         });
         if (!gate) return reply.code(404).send({ error: "Change Set Revision not found" });
         return reply.code(200).send(gate);
+      },
+    );
+  });
+
+  /**
+   * Commit provenance is a read of what a commit was made of: the commit, the
+   * revision it carries, the validation runs and review decisions it
+   * referenced, and its audit events. It never re-derives the gate or the
+   * commit, and a commit of another novel is not this novel's provenance.
+   */
+  app.get("/novels/:novelId/commits/:commitId", async (request, reply) => {
+    const params = z
+      .object({ novelId: z.string().min(1), commitId: z.string().min(1) })
+      .parse(request.params);
+    return pipeline.execute(
+      routeContracts.commitProvenance,
+      routeBoundaryContext(request, params.novelId),
+      routeBoundaryInput(request),
+      async () => {
+        const provenance = await commitProvenance.get({
+          novelId: params.novelId,
+          commitId: params.commitId,
+        });
+        if (!provenance) return reply.code(404).send({ error: "Commit not found" });
+        return reply.code(200).send(provenance);
       },
     );
   });
@@ -1586,38 +1635,6 @@ export function registerNovelBrainRoutes(
       },
     );
   });
-}
-
-function reviewsForRequirements(input: {
-  revision: ChangeSetRevision;
-  requirements: readonly CommitChangeSetRevisionApprovalRequirement[];
-  template: z.infer<typeof commitRequestSchema>["reviewDecision"];
-  validationId: string;
-  createdAt: Date;
-}): readonly ReviewDecision[] {
-  const unique = new Map<string, ApprovalScope>();
-  for (const requirement of input.requirements) {
-    const key = approvalScopeKey(requirement.approvalScope);
-    if (!unique.has(key)) unique.set(key, requirement.approvalScope);
-  }
-  const scopes = [...unique.values()];
-  return scopes.map((approvalScope, index) =>
-    createReviewDecision({
-      id: scopes.length === 1 ? input.template.id : `${input.template.id}:${index + 1}`,
-      changeSetRevisionId: input.revision.revisionId,
-      approvalScope,
-      decision: "approve",
-      decidedBy: input.template.decidedBy,
-      actorId: input.template.actorId,
-      reason: input.template.reason,
-      evidenceReferences: [input.validationId, ...input.template.evidenceReferences],
-      ...(input.template.policyVersion
-        ? { policyVersion: input.template.policyVersion }
-        : {}),
-      ...(input.template.decisionRule ? { decisionRule: input.template.decisionRule } : {}),
-      createdAt: input.createdAt,
-    }),
-  );
 }
 
 const workspaceFocusQuerySchema = z.object({

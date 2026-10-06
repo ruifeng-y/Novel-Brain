@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { createInMemoryEngineDependencies } from "../../src/app/composition";
+import { createChangeSetRevisionService } from "../../src/app/changeSetRevisionService";
 import { createNovelBrainServer } from "../../src/http/server";
 import {
   createHttpBoundaryPipeline,
@@ -20,7 +21,6 @@ import {
   saveRunPlanRevision,
 } from "../../src/production/application/runPlanService";
 import { createVersionReference, createVersionSet } from "../../src/shared/domain/versioning";
-import { hashContent } from "../../src/shared/domain/contentHash";
 
 const now = new Date("2026-10-06T00:00:00.000Z");
 
@@ -128,19 +128,16 @@ function generationTaskPayload(id: string, sceneId: string) {
   };
 }
 
-function commitPayload(candidateId: string, sceneId: string) {
+/** W3 boundary: the commit references real artefacts by id, never a candidate. */
+function commitPayload(revisionId: string, sceneId: string) {
   return {
-    commitId: `commit-${candidateId}`,
-    changeSetRevisionId: `revision-${candidateId}`,
-    candidateId,
-    candidateSource: { version: "v1", hash: hashContent("candidate-source") },
-    planVersionId: "plan-v1",
-    validationId: `validation-${candidateId}`,
-    mustPreserve: [],
+    commitId: `commit-${revisionId}`,
+    changeSetRevisionId: revisionId,
+    validationRunIds: [`validation-${revisionId}`],
+    reviewDecisionIds: [`review-${revisionId}`],
     currentRevisionFacts: { unresolvedConflict: false, stale: false },
     targetInvariantViolations: [],
-    requiredApproval: false,
-    approvalScopeRequirements: [
+    approvalRequirements: [
       {
         approvalScope: {
           requirementDomain: "manuscript",
@@ -151,13 +148,6 @@ function commitPayload(candidateId: string, sceneId: string) {
         requirementLevel: "not_required",
       },
     ],
-    reviewDecision: {
-      id: "review-1",
-      decidedBy: "human",
-      actorId: "iso-author-1",
-      reason: "Approved",
-      evidenceReferences: [],
-    },
   };
 }
 
@@ -316,27 +306,32 @@ describe("[task:Hardening-C] [integration] identity derived from a pre-loaded ag
     expect(await dependencies.candidates.findById("candidate-attack")).toBeUndefined();
   });
 
-  it("derives the commit workspace from the loaded Candidate", async () => {
+  it("derives the commit workspace from the addressed Change Set Revision", async () => {
     const { app, dependencies } = harness();
     await seedWorkspace(dependencies, foreignWorkspaceId, "b");
-    await dependencies.candidates.save(
-      createCandidate({
-        id: "candidate-b",
-        taskId: "task-b",
-        novelId: foreignWorkspaceId,
-        basedOnVersionSet: createVersionSet({
-          scene: createVersionReference("Scene", "scene-b", "scene-b:rev-1"),
-        }),
-        change: { type: "text", sceneId: "scene-b", text: "Foreign text" },
-        createdAt: now,
+    const candidate = createCandidate({
+      id: "candidate-b",
+      taskId: "task-b",
+      novelId: foreignWorkspaceId,
+      basedOnVersionSet: createVersionSet({
+        scene: createVersionReference("Scene", "scene-b", "scene-b:rev-1"),
       }),
-    );
+      change: { type: "text", sceneId: "scene-b", text: "Foreign text" },
+      createdAt: now,
+    });
+    await dependencies.candidates.save(candidate);
+    await createChangeSetRevisionService({ changeSets: dependencies.changeSets }).adoptCandidate({
+      candidate,
+      changeSetId: "change-set-b",
+      revisionId: "revision-candidate-b",
+      createdAt: now,
+    });
 
     const response = await app.inject({
       method: "POST",
       url: "/change-sets/change-set-b/commit",
       headers: scopedHeader,
-      payload: commitPayload("candidate-b", "scene-b"),
+      payload: commitPayload("revision-candidate-b", "scene-b"),
     });
 
     expect(response.statusCode).toBe(403);
