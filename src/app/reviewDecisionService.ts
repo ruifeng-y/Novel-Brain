@@ -21,11 +21,14 @@ import { InMemoryRepository } from "./inMemoryRepositories";
  * A ReviewDecision is an immutable Decision Event bound to the Change Set
  * Revision it decides about and to an Approval Scope. It is not a revisioned
  * aggregate, so it is created once under its own id. The stored payload adds
- * the workspace of the reviewed revision so decisions can be enumerated for
- * that workspace; the enumeration dimension is not a second relationship, and
- * the revision binding stays the only decision subject.
+ * the Change Set half of the revision address — a revision id is unique only
+ * inside its Change Set — plus the workspace of the reviewed revision so
+ * decisions can be enumerated for that workspace. Neither added field is a
+ * second relationship: the revision binding stays the only decision subject.
  */
 export interface StoredReviewDecision extends ReviewDecision {
+  /** The Change Set the reviewed revision belongs to. */
+  readonly changeSetId: string;
   /** The workspace of the reviewed revision; the store's enumeration dimension. */
   readonly novelId: string;
 }
@@ -49,9 +52,9 @@ export function createPrismaReviewDecisionStore(
 }
 
 /**
- * The decision as the domain defines it: the enumeration dimension is dropped,
- * and absent optional fields stay absent so the payload codec never sees an
- * `undefined` value.
+ * The decision as the domain defines it: the Change Set half of the address and
+ * the enumeration dimension are dropped, and absent optional fields stay absent
+ * so the payload codec never sees an `undefined` value.
  */
 export function reviewDecisionOf(stored: ReviewDecision): ReviewDecision {
   return Object.freeze({
@@ -107,9 +110,10 @@ export class ReviewDecisionBindingError extends Error {
 }
 
 /** Decision identity excludes `createdAt`, so a retry is idempotent, not a conflict. */
-function decisionIdentity(decision: ReviewDecision): string {
+function decisionIdentity(decision: StoredReviewDecision): string {
   return canonicalJson({
     id: decision.id,
+    changeSetId: decision.changeSetId,
     changeSetRevisionId: decision.changeSetRevisionId,
     approvalScope: decision.approvalScope,
     decision: decision.decision,
@@ -167,19 +171,20 @@ export function createReviewDecisionService(dependencies: {
       });
       const stored: StoredReviewDecision = Object.freeze({
         ...reviewDecisionOf(decision),
+        changeSetId: revision.changeSetId,
         novelId: revision.novelId,
       });
 
       const existing = await dependencies.reviews.findById(decision.id);
       if (existing) {
-        if (decisionIdentity(existing) !== decisionIdentity(decision)) throw alreadyExists();
+        if (decisionIdentity(existing) !== decisionIdentity(stored)) throw alreadyExists();
         return reviewDecisionOf(existing);
       }
       try {
         await dependencies.reviews.saveIfAbsent(stored);
       } catch {
         const raced = await dependencies.reviews.findById(decision.id);
-        if (!raced || decisionIdentity(raced) !== decisionIdentity(decision)) throw alreadyExists();
+        if (!raced || decisionIdentity(raced) !== decisionIdentity(stored)) throw alreadyExists();
         return reviewDecisionOf(raced);
       }
       return reviewDecisionOf(stored);
@@ -188,10 +193,15 @@ export function createReviewDecisionService(dependencies: {
     async listForRevision(input) {
       const revision = await revisionOf(input);
       const stored = await dependencies.reviews.listByNovel(revision.novelId);
-      // A decision recorded for one revision is never returned for another.
+      // A decision recorded for one revision is never returned for another:
+      // the revision address includes the Change Set it belongs to.
       return Object.freeze(
         stored
-          .filter(decision => decision.changeSetRevisionId === revision.revisionId)
+          .filter(
+            decision =>
+              decision.changeSetId === revision.changeSetId &&
+              decision.changeSetRevisionId === revision.revisionId,
+          )
           .map(reviewDecisionOf)
           .sort(byRecordedOrder),
       );

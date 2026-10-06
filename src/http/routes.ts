@@ -286,7 +286,19 @@ function jsonArrayField<T>(element: z.ZodType<T>, label: string) {
 const booleanQueryFlag = z.enum(["true", "false"]).default("false");
 
 const commitGateRequestSchema = z.object({
-  validationRunIds: z.string().optional(),
+  /** Required: the gate preview names the validation evidence it evaluates. */
+  validationRunIds: z
+    .string()
+    .min(1)
+    .transform(value =>
+      value
+        .split(",")
+        .map(entry => entry.trim())
+        .filter(entry => entry.length > 0),
+    )
+    .refine(ids => ids.length > 0, {
+      message: "validationRunIds must name at least one run",
+    }),
   unresolvedConflict: booleanQueryFlag,
   stale: booleanQueryFlag,
   occConflict: booleanQueryFlag,
@@ -892,6 +904,7 @@ export function registerNovelBrainRoutes(
         async () => {
           const run = await validationRuns.getValidation({
             validationId: params.validationId,
+            changeSetId: params.changeSetId,
             revisionId: params.revisionId,
           });
           if (!run) return reply.code(404).send({ error: "Validation Run not found" });
@@ -1002,14 +1015,10 @@ export function registerNovelBrainRoutes(
       routeBoundaryContext(request, revision.novelId),
       routeBoundaryInput(request),
       async () => {
-        const runIds = (query.validationRunIds ?? "")
-          .split(",")
-          .map(value => value.trim())
-          .filter(value => value.length > 0);
         const gate = await commitGate.evaluate({
           changeSetId: params.changeSetId,
           revisionId: params.revisionId,
-          ...(runIds.length === 0 ? {} : { validationRunIds: runIds }),
+          validationRunIds: query.validationRunIds,
           currentRevisionFacts: {
             unresolvedConflict: query.unresolvedConflict === "true",
             stale: query.stale === "true",

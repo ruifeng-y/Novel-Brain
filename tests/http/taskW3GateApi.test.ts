@@ -12,6 +12,7 @@ import { createPlatformObservabilityBoundary } from "../../src/platform/observab
 import { createProductionSecurityBoundary } from "../../src/platform/productionSecurityProvider";
 import { createCandidate, type Candidate } from "../../src/production/domain/candidate";
 import { createValidationRun } from "../../src/production/domain/validationRun";
+import { storedValidationRun } from "../../src/app/validationRunService";
 import { createVersionReference, createVersionSet } from "../../src/shared/domain/versioning";
 import type { ApiDependencies } from "../../src/http/routes";
 
@@ -106,19 +107,27 @@ async function seedRevision(
 
 async function seedRun(
   dependencies: ApiDependencies,
-  input: { readonly id: string; readonly revisionId?: string; readonly outcome: "pass" | "fail" },
+  input: {
+    readonly id: string;
+    readonly changeSetId?: string;
+    readonly revisionId?: string;
+    readonly outcome: "pass" | "fail";
+  },
 ) {
   await dependencies.validations.saveIfAbsent(
-    createValidationRun({
-      id: input.id,
-      changeSetRevisionId: input.revisionId ?? "cs-1:r1",
-      planVersionId: "plan-v1",
-      validatorId: "validator-1",
-      entryResults: [],
-      executionState: "completed",
-      outcome: input.outcome,
-      createdAt: AT,
-    }),
+    storedValidationRun(
+      createValidationRun({
+        id: input.id,
+        changeSetRevisionId: input.revisionId ?? "cs-1:r1",
+        planVersionId: "plan-v1",
+        validatorId: "validator-1",
+        entryResults: [],
+        executionState: "completed",
+        outcome: input.outcome,
+        createdAt: AT,
+      }),
+      input.changeSetId ?? "cs-1",
+    ),
   );
 }
 
@@ -186,6 +195,7 @@ describe("[task:W3] [integration] commit gate HTTP surface", () => {
       parentRevisionId: "cs-1:r1",
     });
     await seedRun(dependencies, { id: "run-other", revisionId: "cs-1:r2", outcome: "pass" });
+    await seedRun(dependencies, { id: "run-other-set", changeSetId: "cs-2", outcome: "pass" });
 
     const crossRevision = await app.inject({
       method: "GET",
@@ -195,13 +205,39 @@ describe("[task:W3] [integration] commit gate HTTP surface", () => {
     });
     expect(crossRevision.statusCode).toBe(409);
 
+    // Same revision id string, different Change Set: never a silent substitution.
+    const crossChangeSet = await app.inject({
+      method: "GET",
+      url: gateUrl,
+      headers: authorHeader,
+      query: { validationRunIds: "run-other-set" },
+    });
+    expect(crossChangeSet.statusCode).toBe(409);
+
     const malformed = await app.inject({
       method: "GET",
       url: gateUrl,
       headers: authorHeader,
-      query: { approvalRequirements: "{not json}" },
+      query: { validationRunIds: "run-other", approvalRequirements: "{not json}" },
     });
     expect(malformed.statusCode).toBe(400);
+    await app.close();
+  });
+
+  it("requires the validation evidence to be named", async () => {
+    const { app, dependencies } = harness();
+    await seedRevision(dependencies, {});
+
+    const omitted = await app.inject({ method: "GET", url: gateUrl, headers: authorHeader });
+    expect(omitted.statusCode).toBe(400);
+
+    const empty = await app.inject({
+      method: "GET",
+      url: gateUrl,
+      headers: authorHeader,
+      query: { validationRunIds: "" },
+    });
+    expect(empty.statusCode).toBe(400);
     await app.close();
   });
 
@@ -219,6 +255,7 @@ describe("[task:W3] [integration] commit gate HTTP surface", () => {
       method: "GET",
       url: "/change-sets/cs-1/revisions/cs-1:missing/commit-gate",
       headers: authorHeader,
+      query: { validationRunIds: "run-any" },
     });
     expect(unknownRevision.statusCode).toBe(404);
 
@@ -226,6 +263,7 @@ describe("[task:W3] [integration] commit gate HTTP surface", () => {
       method: "GET",
       url: "/change-sets/cs-other/revisions/cs-other:r1/commit-gate",
       headers: authorHeader,
+      query: { validationRunIds: "run-any" },
     });
     expect(otherWorkspace.statusCode).toBe(403);
     await app.close();

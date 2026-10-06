@@ -201,4 +201,41 @@ describe("[task:W3] [domain] review decision service", () => {
       await service.listForRevision({ changeSetId: "cs-other", revisionId: "cs-other:r1" }),
     ).toHaveLength(1);
   });
+
+  it("never answers with a decision recorded in another Change Set that reuses the revision id", async () => {
+    const persistence = createInMemoryChangeSetPersistence();
+    const changeSetRevisions = createChangeSetRevisionService({
+      changeSets: persistence.changeSets,
+    });
+    const candidates = new InMemoryRevisionedRepository<Candidate>();
+    await candidates.save(candidateFixture());
+    // The same revision id string in two different Change Sets.
+    await changeSetRevisions.adoptCandidate({
+      candidate: candidateFixture(),
+      changeSetId: "cs-1",
+      revisionId: "shared:r1",
+      createdAt: AT,
+    });
+    await changeSetRevisions.adoptCandidate({
+      candidate: candidateFixture(),
+      changeSetId: "cs-2",
+      revisionId: "shared:r1",
+      createdAt: AT,
+    });
+
+    const service = createReviewDecisionService({
+      reviews: createInMemoryReviewDecisionStore(),
+      changeSets: persistence.changeSets,
+    });
+    await service.recordReview(
+      approvalInput({ reviewDecisionId: "review-cs-2", changeSetId: "cs-2", revisionId: "shared:r1" }),
+    );
+
+    expect(
+      await service.listForRevision({ changeSetId: "cs-1", revisionId: "shared:r1" }),
+    ).toHaveLength(0);
+    expect(
+      await service.listForRevision({ changeSetId: "cs-2", revisionId: "shared:r1" }),
+    ).toHaveLength(1);
+  });
 });

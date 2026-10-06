@@ -18,23 +18,55 @@ import { InMemoryRepository } from "./inMemoryRepositories";
  * A ValidationRun is an immutable run, not a revisioned aggregate, so it is
  * created once under its own id. `"ValidationRun"` is a frozen VersionReference
  * aggregate name; the run binds to the Change Set Revision it validated.
+ *
+ * A revision id is unique only inside its Change Set, so the address of the
+ * revision is the pair (`changeSetId` + `revisionId`). The stored payload
+ * carries that pair, which is why a run can never be read under another
+ * Change Set even when two Change Sets use the same revision id string.
  */
-export type ValidationRunStore = UniqueCreatePort<ValidationRun>;
+export interface StoredValidationRun extends ValidationRun {
+  readonly changeSetId: string;
+}
+
+export type ValidationRunStore = UniqueCreatePort<StoredValidationRun>;
 
 export function createInMemoryValidationRunStore(): ValidationRunStore {
-  return new InMemoryRepository<ValidationRun>(capabilityPersistencePayloadCodec);
+  return new InMemoryRepository<StoredValidationRun>(capabilityPersistencePayloadCodec);
 }
 
 export function createPrismaValidationRunStore(
   prisma: PrismaClient,
   aggregateType = "ValidationRun",
 ): ValidationRunStore {
-  return new PrismaRepository<ValidationRun>(
+  return new PrismaRepository<StoredValidationRun>(
     prisma,
     aggregateType,
-    payload => payload as unknown as ValidationRun,
+    payload => payload as unknown as StoredValidationRun,
     capabilityPersistencePayloadCodec,
   );
+}
+
+/**
+ * The run as the domain defines it: the Change Set half of the address is
+ * dropped, and absent optional fields stay absent so the payload codec never
+ * sees an `undefined` value.
+ */
+export function validationRunOf(stored: ValidationRun): ValidationRun {
+  return Object.freeze({
+    id: stored.id,
+    changeSetRevisionId: stored.changeSetRevisionId,
+    planVersionId: stored.planVersionId,
+    validatorId: stored.validatorId,
+    entryResults: stored.entryResults,
+    executionState: stored.executionState,
+    ...(stored.outcome === undefined ? {} : { outcome: stored.outcome }),
+    createdAt: new Date(stored.createdAt.getTime()),
+  });
+}
+
+/** The run as it is stored: the domain run plus the Change Set half of the address. */
+export function storedValidationRun(run: ValidationRun, changeSetId: string): StoredValidationRun {
+  return Object.freeze({ ...validationRunOf(run), changeSetId });
 }
 
 export interface RunValidationInput {
@@ -49,8 +81,10 @@ export interface RunValidationInput {
 
 export interface GetValidationInput {
   readonly validationId: string;
-  /** When given, the run is only returned if it validated this exact revision. */
-  readonly revisionId?: string;
+  /** The Change Set the run's revision belongs to. */
+  readonly changeSetId: string;
+  /** The run is only returned if it validated this exact revision. */
+  readonly revisionId: string;
 }
 
 export interface ValidationRunService {
@@ -70,10 +104,15 @@ export class ValidationBindingError extends Error {
   }
 }
 
-/** Run identity excludes `createdAt`, so a retry is idempotent, not a conflict. */
-function validationIdentity(run: ValidationRun): string {
+/**
+ * Run identity excludes `createdAt`, so a retry is idempotent, not a conflict,
+ * and includes the Change Set half of the revision address, so the same run id
+ * under another Change Set is a conflict rather than a silent substitution.
+ */
+function validationIdentity(run: StoredValidationRun): string {
   return canonicalJson({
     id: run.id,
+    changeSetId: run.changeSetId,
     changeSetRevisionId: run.changeSetRevisionId,
     planVersionId: run.planVersionId,
     validatorId: run.validatorId,
@@ -145,27 +184,31 @@ export function createValidationRunService(dependencies: {
         createdAt: input.createdAt,
       });
 
+      const persisted = storedValidationRun(run, input.changeSetId);
       const existing = await dependencies.validations.findById(run.id);
       if (existing) {
-        if (validationIdentity(existing) !== validationIdentity(run)) throw alreadyExists();
-        return existing;
+        if (validationIdentity(existing) !== validationIdentity(persisted)) throw alreadyExists();
+        return validationRunOf(existing);
       }
       try {
-        await dependencies.validations.saveIfAbsent(run);
+        await dependencies.validations.saveIfAbsent(persisted);
       } catch {
         const raced = await dependencies.validations.findById(run.id);
-        if (!raced || validationIdentity(raced) !== validationIdentity(run)) throw alreadyExists();
-        return raced;
+        if (!raced || validationIdentity(raced) !== validationIdentity(persisted)) {
+          throw alreadyExists();
+        }
+        return validationRunOf(raced);
       }
-      return run;
+      return validationRunOf(persisted);
     },
 
-    async getValidation({ validationId, revisionId }) {
+    async getValidation({ validationId, changeSetId, revisionId }) {
       const run = await dependencies.validations.findById(validationId);
       if (!run) return undefined;
-      // A run for one revision is never returned as another revision's result.
-      if (revisionId !== undefined && run.changeSetRevisionId !== revisionId) return undefined;
-      return run;
+      // A run for one revision is never returned as another revision's result,
+      // and the revision address includes the Change Set it belongs to.
+      if (run.changeSetId !== changeSetId || run.changeSetRevisionId !== revisionId) return undefined;
+      return validationRunOf(run);
     },
   };
 }

@@ -18,7 +18,7 @@ import {
   type CommitGateInvariantViolation,
   type CommitGateRequiredAction,
 } from "../safety/domain/commitGate";
-import { ValidationBindingError } from "./validationRunService";
+import { validationRunOf, ValidationBindingError, type StoredValidationRun } from "./validationRunService";
 import { reviewDecisionOf, type ReviewDecisionStore } from "./reviewDecisionService";
 
 /** One of the five gate conditions, reported on its own and never collapsed. */
@@ -95,12 +95,12 @@ export interface EvaluateCommitGateInput {
   readonly changeSetId: string;
   readonly revisionId: string;
   /**
-   * The validation runs the author intends to commit with. Each must exist and
-   * belong to the addressed revision: a mismatch is a conflict, never a silent
-   * substitution. Omitted means no validation evidence was supplied, which the
-   * frozen outcome rule reads as a pass over an empty run set.
+   * The validation runs the author intends to commit with. Required: the gate
+   * preview names the evidence it evaluates. Each id must exist and belong to
+   * the addressed revision — the address is the pair (Change Set, revision) —
+   * so a mismatch is a conflict, never a silent substitution.
    */
-  readonly validationRunIds?: readonly string[];
+  readonly validationRunIds: readonly string[];
   readonly currentRevisionFacts: CommitChangeSetRevisionCurrentRevisionFacts;
   readonly occConflict?: boolean;
   readonly occConflictFacts?: readonly string[];
@@ -120,7 +120,7 @@ export interface CommitGateQuery {
  */
 export function createCommitGateQuery(dependencies: {
   readonly changeSets: ChangeSetRevisionRepository;
-  readonly validations: RepositoryReadPort<ValidationRun>;
+  readonly validations: RepositoryReadPort<StoredValidationRun>;
   readonly reviews: ReviewDecisionStore;
 }): CommitGateQuery {
   return {
@@ -129,19 +129,38 @@ export function createCommitGateQuery(dependencies: {
       if (!stored) return undefined;
       const revision = changeSetRevisionOf(stored);
 
+      // The gate preview names the evidence it evaluates, and the commit
+      // requires at least one run, so an unnamed run set is refused here rather
+      // than previewed as a pass the commit would reject.
+      if (input.validationRunIds.length === 0) {
+        throw new ValidationBindingError(
+          `The gate requires at least one validation run for revision ` +
+            `${revision.changeSetId}:${revision.revisionId}`,
+        );
+      }
+
       const runs: ValidationRun[] = [];
-      for (const validationRunId of input.validationRunIds ?? []) {
+      for (const validationRunId of input.validationRunIds) {
         const run = await dependencies.validations.findById(validationRunId);
-        if (!run || run.changeSetRevisionId !== revision.revisionId) {
+        if (
+          !run ||
+          run.changeSetId !== revision.changeSetId ||
+          run.changeSetRevisionId !== revision.revisionId
+        ) {
           throw new ValidationBindingError(
-            `Validation run ${validationRunId} does not belong to revision ${revision.revisionId}`,
+            `Validation run ${validationRunId} does not belong to revision ` +
+              `${revision.changeSetId}:${revision.revisionId}`,
           );
         }
-        runs.push(run);
+        runs.push(validationRunOf(run));
       }
 
       const decisions = (await dependencies.reviews.listByNovel(revision.novelId))
-        .filter(decision => decision.changeSetRevisionId === revision.revisionId)
+        .filter(
+          decision =>
+            decision.changeSetId === revision.changeSetId &&
+            decision.changeSetRevisionId === revision.revisionId,
+        )
         .map(reviewDecisionOf);
 
       const requirements = input.approvalRequirements ?? [];

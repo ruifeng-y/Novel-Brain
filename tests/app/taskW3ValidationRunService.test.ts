@@ -88,7 +88,11 @@ describe("[task:W3] [domain] validation run as a reachable stage", () => {
     expect(run.executionState).toBe("completed");
     expect(run.outcome).toBe("fail");
 
-    const readBack = await service.getValidation({ validationId: run.id });
+    const readBack = await service.getValidation({
+      validationId: run.id,
+      changeSetId: "cs-1",
+      revisionId: "cs-1:r1",
+    });
     expect(readBack?.changeSetRevisionId).toBe("cs-1:r1");
     expect(readBack?.planVersionId).toBe("plan-v1");
     const findings = readBack?.entryResults.flatMap(entry => entry.findings) ?? [];
@@ -109,12 +113,28 @@ describe("[task:W3] [domain] validation run as a reachable stage", () => {
     const { service } = await harness();
     const run = await service.runValidation(validationInput());
 
-    expect(await service.getValidation({ validationId: "run-for-other-revision" })).toBeUndefined();
     expect(
-      await service.getValidation({ validationId: run.id, revisionId: "cs-1:r2" }),
+      await service.getValidation({
+        validationId: "run-for-other-revision",
+        changeSetId: "cs-1",
+        revisionId: "cs-1:r1",
+      }),
     ).toBeUndefined();
     expect(
-      (await service.getValidation({ validationId: run.id, revisionId: "cs-1:r1" }))?.id,
+      await service.getValidation({
+        validationId: run.id,
+        changeSetId: "cs-1",
+        revisionId: "cs-1:r2",
+      }),
+    ).toBeUndefined();
+    expect(
+      (
+        await service.getValidation({
+          validationId: run.id,
+          changeSetId: "cs-1",
+          revisionId: "cs-1:r1",
+        })
+      )?.id,
     ).toBe(run.id);
   });
 
@@ -144,5 +164,120 @@ describe("[task:W3] [domain] validation run as a reachable stage", () => {
     await expect(
       service.runValidation(validationInput({ revisionId: "cs-1:missing" })),
     ).rejects.toThrow(/Revision not found/);
+  });
+
+  it("never answers a run under another Change Set that reuses the same revision id", async () => {
+    const persistence = createInMemoryChangeSetPersistence();
+    const changeSetRevisions = createChangeSetRevisionService({
+      changeSets: persistence.changeSets,
+    });
+    const scenes = new InMemoryRevisionedRepository<Scene>();
+    const candidates = new InMemoryRevisionedRepository<Candidate>();
+    await scenes.save(sceneFixture());
+    await candidates.save(candidateFixture());
+    // The same revision id string in two different Change Sets.
+    await changeSetRevisions.adoptCandidate({
+      candidate: candidateFixture(),
+      changeSetId: "cs-1",
+      revisionId: "shared:r1",
+      createdAt: AT,
+    });
+    await changeSetRevisions.adoptCandidate({
+      candidate: candidateFixture(),
+      changeSetId: "cs-2",
+      revisionId: "shared:r1",
+      createdAt: AT,
+    });
+
+    const service = createValidationRunService({
+      changeSets: persistence.changeSets,
+      validations: createInMemoryValidationRunStore(),
+      scenes,
+      candidates,
+    });
+    const first = await service.runValidation({
+      changeSetId: "cs-1",
+      revisionId: "shared:r1",
+      validationId: "run-cs-1",
+      planVersionId: "plan-v1",
+      candidateId: "candidate-1",
+      mustPreserve: [],
+      createdAt: AT,
+    });
+    await service.runValidation({
+      changeSetId: "cs-2",
+      revisionId: "shared:r1",
+      validationId: "run-cs-2",
+      planVersionId: "plan-v1",
+      candidateId: "candidate-1",
+      mustPreserve: [],
+      createdAt: AT,
+    });
+
+    expect(
+      (await service.getValidation({
+        validationId: "run-cs-1",
+        changeSetId: "cs-1",
+        revisionId: "shared:r1",
+      }))?.id,
+    ).toBe(first.id);
+    expect(
+      await service.getValidation({
+        validationId: "run-cs-1",
+        changeSetId: "cs-2",
+        revisionId: "shared:r1",
+      }),
+    ).toBeUndefined();
+  });
+
+  it("treats the same validation id in another Change Set as a conflict, not a substitution", async () => {
+    const persistence = createInMemoryChangeSetPersistence();
+    const changeSetRevisions = createChangeSetRevisionService({
+      changeSets: persistence.changeSets,
+    });
+    const scenes = new InMemoryRevisionedRepository<Scene>();
+    const candidates = new InMemoryRevisionedRepository<Candidate>();
+    await scenes.save(sceneFixture());
+    await candidates.save(candidateFixture());
+    await changeSetRevisions.adoptCandidate({
+      candidate: candidateFixture(),
+      changeSetId: "cs-1",
+      revisionId: "shared:r1",
+      createdAt: AT,
+    });
+    await changeSetRevisions.adoptCandidate({
+      candidate: candidateFixture(),
+      changeSetId: "cs-2",
+      revisionId: "shared:r1",
+      createdAt: AT,
+    });
+
+    const service = createValidationRunService({
+      changeSets: persistence.changeSets,
+      validations: createInMemoryValidationRunStore(),
+      scenes,
+      candidates,
+    });
+    await service.runValidation({
+      changeSetId: "cs-1",
+      revisionId: "shared:r1",
+      validationId: "run-shared",
+      planVersionId: "plan-v1",
+      candidateId: "candidate-1",
+      mustPreserve: [],
+      createdAt: AT,
+    });
+
+    await expect(
+      service.runValidation({
+        changeSetId: "cs-2",
+        revisionId: "shared:r1",
+        validationId: "run-shared",
+        planVersionId: "plan-v1",
+        candidateId: "candidate-1",
+        mustPreserve: [],
+        createdAt: AT,
+      }),
+    ).rejects.toThrow(/different content/);
   });
 });

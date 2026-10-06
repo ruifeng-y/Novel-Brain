@@ -4,7 +4,11 @@ import {
   createInMemoryReviewDecisionStore,
   createReviewDecisionService,
 } from "../../src/app/reviewDecisionService";
-import { createInMemoryValidationRunStore, ValidationBindingError } from "../../src/app/validationRunService";
+import {
+  createInMemoryValidationRunStore,
+  storedValidationRun,
+  ValidationBindingError,
+} from "../../src/app/validationRunService";
 import { createInMemoryChangeSetPersistence } from "../../src/production/application/changeSetPersistence";
 import { createChangeSetRevisionService } from "../../src/app/changeSetRevisionService";
 import { InMemoryRevisionedRepository } from "../../src/app/inMemoryRepositories";
@@ -37,17 +41,25 @@ function candidateFixture(id = "candidate-1"): Candidate {
   });
 }
 
-function runFixture(input: { id: string; revisionId?: string; outcome: "pass" | "fail" | "needs_review" }) {
-  return createValidationRun({
-    id: input.id,
-    changeSetRevisionId: input.revisionId ?? REVISION,
-    planVersionId: "plan-v1",
-    validatorId: "validator-1",
-    entryResults: [],
-    executionState: "completed",
-    outcome: input.outcome,
-    createdAt: AT,
-  });
+function runFixture(input: {
+  id: string;
+  changeSetId?: string;
+  revisionId?: string;
+  outcome: "pass" | "fail" | "needs_review";
+}) {
+  return storedValidationRun(
+    createValidationRun({
+      id: input.id,
+      changeSetRevisionId: input.revisionId ?? REVISION,
+      planVersionId: "plan-v1",
+      validatorId: "validator-1",
+      entryResults: [],
+      executionState: "completed",
+      outcome: input.outcome,
+      createdAt: AT,
+    }),
+    input.changeSetId ?? CHANGE_SET,
+  );
 }
 
 async function harness() {
@@ -76,6 +88,7 @@ async function harness() {
   });
 
   const validations = createInMemoryValidationRunStore();
+  await validations.saveIfAbsent(runFixture({ id: "run-pass", outcome: "pass" }));
   const reviews = createInMemoryReviewDecisionStore();
   const query = createCommitGateQuery({
     changeSets: persistence.changeSets,
@@ -93,6 +106,7 @@ function gateInput(overrides: Partial<EvaluateCommitGateInput> = {}): EvaluateCo
   return {
     changeSetId: CHANGE_SET,
     revisionId: REVISION,
+    validationRunIds: ["run-pass"],
     currentRevisionFacts: { unresolvedConflict: false, stale: false },
     targetInvariantViolations: [],
     ...overrides,
@@ -123,8 +137,7 @@ describe("[task:W3] [domain] commit gate query", () => {
   });
 
   it("allows a clean revision and reports every condition as satisfied", async () => {
-    const { query, validations } = await harness();
-    await validations.saveIfAbsent(runFixture({ id: "run-pass", outcome: "pass" }));
+    const { query } = await harness();
 
     const gate = await query.evaluate(gateInput({ validationRunIds: ["run-pass"] }));
 
@@ -214,6 +227,16 @@ describe("[task:W3] [domain] commit gate query", () => {
     expect(await query.evaluate(gateInput({ revisionId: "cs-1:missing" }))).toBeUndefined();
   });
 
+  it("refuses to preview a gate with no named validation evidence", async () => {
+    const { query } = await harness();
+
+    // The commit requires at least one run, so the preview must not report a
+    // pass the commit would reject.
+    await expect(query.evaluate(gateInput({ validationRunIds: [] }))).rejects.toBeInstanceOf(
+      ValidationBindingError,
+    );
+  });
+
   it("refuses a validation run that belongs to another revision", async () => {
     const { query, validations } = await harness();
     await validations.saveIfAbsent(
@@ -222,6 +245,17 @@ describe("[task:W3] [domain] commit gate query", () => {
 
     await expect(
       query.evaluate(gateInput({ validationRunIds: ["run-other"] })),
+    ).rejects.toBeInstanceOf(ValidationBindingError);
+  });
+
+  it("refuses a validation run stored under another Change Set with the same revision id", async () => {
+    const { query, validations } = await harness();
+    await validations.saveIfAbsent(
+      runFixture({ id: "run-other-set", changeSetId: "cs-2", outcome: "pass" }),
+    );
+
+    await expect(
+      query.evaluate(gateInput({ validationRunIds: ["run-other-set"] })),
     ).rejects.toBeInstanceOf(ValidationBindingError);
   });
 

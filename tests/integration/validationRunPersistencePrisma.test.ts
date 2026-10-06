@@ -89,15 +89,30 @@ describe("[task:W3] [integration] Prisma validation run persistence", () => {
       scenes: readerDependencies.scenes,
       candidates: readerDependencies.candidates,
     });
-    const stored = await reader.getValidation({ validationId: runId, revisionId });
+    const stored = await reader.getValidation({
+      validationId: runId,
+      changeSetId,
+      revisionId,
+    });
     expect(stored?.changeSetRevisionId).toBe(revisionId);
     expect(stored?.planVersionId).toBe("plan-v1");
     expect(stored?.createdAt).toBeInstanceOf(Date);
     expect(
       stored?.entryResults.flatMap(entry => entry.findings.map(finding => finding.code)),
     ).toContain("REQUIRED_PHRASE_MISSING");
-    expect(await reader.getValidation({ validationId: runId, revisionId: `${changeSetId}:r2` })).toBe(
-      undefined,
-    );
+    expect(
+      await reader.getValidation({
+        validationId: runId,
+        changeSetId,
+        revisionId: `${changeSetId}:r2`,
+      }),
+    ).toBe(undefined);
+    expect(
+      await reader.getValidation({
+        validationId: runId,
+        changeSetId: `${changeSetId}-other`,
+        revisionId,
+      }),
+    ).toBe(undefined);
   });
 });
