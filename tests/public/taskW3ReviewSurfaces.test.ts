@@ -186,6 +186,37 @@ describe("[task:W3] [cross-system] candidate and commit review surfaces", () => 
     }
     await app.close();
   });
+
+  it("seeds a Focus from the URL without adding a navigation control", async () => {
+    const { seededFocus } = await loadModule("shell.js");
+
+    // A revision address is a pair, so the id keeps its own colon.
+    expect(seededFocus("?focus=change-set-revision:cs-1:cs-1:r1")).toEqual({
+      kind: "change-set-revision",
+      id: "cs-1:cs-1:r1",
+    });
+    expect(seededFocus("?focus=candidate:cs-1:candidate-1")).toEqual({
+      kind: "candidate",
+      id: "cs-1:candidate-1",
+    });
+    expect(seededFocus("?focus=candidate")).toEqual({ kind: "candidate", id: "" });
+    expect(seededFocus("?focus=commit:commit-1")).toEqual({ kind: "commit", id: "commit-1" });
+
+    // Only kinds the shell knows, and only when asked.
+    expect(seededFocus("?focus=not-a-kind")).toBe(null);
+    expect(seededFocus("?other=1")).toBe(null);
+    expect(seededFocus("")).toBe(null);
+  });
+
+  it("applies the seeded Focus at boot on top of the resolved Novel", () => {
+    const shell = source("shell.js");
+    const boot = shell.slice(shell.indexOf("function boot()"), shell.indexOf("function boot()") + 900);
+
+    expect(boot).toContain("seededFocus()");
+    expect(boot).toContain("resolveKind(seeded.kind, undefined, { id: seeded.id })");
+    // The Novel is resolved first, so the structure lens still loads.
+    expect(boot).toContain('resolveKind("novel", undefined, { navigate: true })');
+  });
 });
 
 describe("[task:W3] [regression] the commit spine does not reopen the candidate path", () => {

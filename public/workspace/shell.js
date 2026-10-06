@@ -1302,13 +1302,49 @@ function handleClick(event) {
   }
 }
 
+/**
+ * The Focus can be seeded from the URL as `?focus=<kind>:<id>`. It is a
+ * bootstrap, not a navigation surface: no control is added, no contract
+ * changes, nothing is written back to the URL. It is the same kind of seeding
+ * the identity bar already does for the Novel and the Author, and it is what
+ * makes a Focus reachable repeatably without a navigator of its own.
+ */
+export function seededFocus(search) {
+  const query =
+    typeof search === "string"
+      ? search
+      : typeof window !== "undefined" && window.location
+        ? window.location.search
+        : "";
+  if (query.length === 0) return null;
+  const raw = new URLSearchParams(query).get("focus");
+  if (typeof raw !== "string" || raw.length === 0) return null;
+  // The id may itself contain colons (a revision address is
+  // `changeSetId:revisionId`), so only the first colon separates the kind.
+  const index = raw.indexOf(":");
+  const kind = index === -1 ? raw : raw.slice(0, index);
+  const id = index === -1 ? "" : raw.slice(index + 1);
+  if (!KIND_ORDER.includes(kind)) return null;
+  return { kind: kind, id: id };
+}
+
 function boot() {
   const root = byId("workspace-shell");
   if (!root) return;
   document.addEventListener("click", handleClick);
   syncIdentityInputs(readIdentity());
   render();
-  resolveKind("novel", undefined, { navigate: true });
+  const seeded = seededFocus();
+  if (seeded && seeded.kind !== "novel") {
+    // The Novel is resolved first so the structure is loaded, then the seeded
+    // Focus is applied on top of it.
+    resolveKind("novel", undefined, { navigate: true }).then(() =>
+      resolveKind(seeded.kind, undefined, { id: seeded.id }),
+    );
+    loadStructure();
+    return;
+  }
+  resolveKind(seeded ? seeded.kind : "novel", undefined, { navigate: true });
   loadStructure();
 }
 
