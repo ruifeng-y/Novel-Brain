@@ -311,6 +311,16 @@ export const verificationTaskProfiles = {
       "regression",
     ],
   },
+  W3: {
+    id: "W3",
+    label: "[task:W3]",
+    requiredGates: [
+      "domain",
+      "integration",
+      "cross-system",
+      "regression",
+    ],
+  },
   "7.4-7.5": {
     id: "7.4-7.5",
     label: "[task:7.4-7.5]",

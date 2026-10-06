@@ -24,6 +24,7 @@ import { DeterministicRuntime } from "../production/runtime/deterministicRuntime
 import { DeterministicFoundationRuntime } from "../production/runtime/deterministicFoundationRuntime";
 import { createPrismaNarrativeProposalPersistence } from "../story/application/narrativeProposalPersistence";
 import { createPrismaRunOrchestrationPersistence } from "../production/application/runPlanPersistence";
+import { createPrismaChangeSetPersistence } from "../production/application/changeSetPersistence";
 import { createPrismaAttentionDispositionPersistence } from "../recall/attention/attentionDispositionPersistence";
 import { createPrismaDependencyImpactPersistence } from "../dependency/application/dependencyImpactPersistence";
 
@@ -105,6 +106,7 @@ export function createPrismaEngineDependencies(prisma: PrismaClient): ApiDepende
       revive,
       codec,
     ),
+    changeSets: createPrismaChangeSetPersistence(prisma).changeSets,
     eventStore: new PrismaEventStore(prisma),
     runtime: new DeterministicRuntime(),
     commitTransaction,

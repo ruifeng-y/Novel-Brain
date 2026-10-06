@@ -18,6 +18,8 @@ import { createStructuralNavigationQuery } from "../app/structuralNavigationQuer
 import { createStructureCommandService } from "../app/structureCommandService";
 import { createSceneReadQuery } from "../app/sceneReadQuery";
 import { createTargetSpanResolutionQuery } from "../app/targetSpanResolutionQuery";
+import { createChangeSetRevisionService } from "../app/changeSetRevisionService";
+import { createChangeSetDiffQuery } from "../app/changeSetDiffQuery";
 import type { FoundationWorkspaceFocus } from "../story/application/foundationWorkspaceContract";
 import type { FoundationGenerationOptions } from "../story/application/foundationEntryService";
 import {
@@ -39,17 +41,10 @@ import {
   createGenerationTask,
   startGenerationTask,
 } from "../production/domain/generationTask";
-import type {
-  Candidate,
-  CandidateAtomicChange,
-} from "../production/domain/candidate";
+import type { Candidate } from "../production/domain/candidate";
 import { createCandidate } from "../production/domain/candidate";
-import {
-  assertNoDuplicateTargets,
-  createChange,
-  type Change,
-  type ChangeSourceType,
-} from "../production/domain/change";
+import { createChange, type Change } from "../production/domain/change";
+import type { ChangeSetRevisionRepository } from "../production/application/changeSetPersistence";
 import {
   createInitialChangeSetRevision,
   type ChangeSetRevision,
@@ -90,6 +85,7 @@ export interface ApiDependencies {
   readonly canonicalFacts: RevisionedRepository<CanonicalFact>;
   readonly stateRecords: RevisionedRepository<StateRecord>;
   readonly narrativeCommits: Repository<NarrativeCommit>;
+  readonly changeSets: ChangeSetRevisionRepository;
   readonly eventStore: EventStore;
   readonly runtime: RuntimeAdapter;
   readonly commitTransaction: CommitChangeSetRevisionTransaction;
@@ -234,6 +230,20 @@ const commitRequestSchema = z.object({
   }),
 });
 
+const changeSetRevisionRequestSchema = z.object({
+  candidateId: z.string().min(1),
+  revisionId: z.string().min(1),
+  parentRevisionId: z.string().min(1).optional(),
+  candidateSource: z
+    .object({ version: z.string().min(1), hash: z.string().min(1) })
+    .optional(),
+});
+
+const changeSetDiffRequestSchema = z.object({
+  fromRevisionId: z.string().min(1),
+  toRevisionId: z.string().min(1),
+});
+
 /**
  * Each route binds to a real production API boundary contract. The manuscript
  * scene route has no dedicated contract in the frozen application boundary, so
@@ -245,6 +255,8 @@ const routeContracts = {
   createGenerationTask: "generation.command.create-generation-task",
   submitGenerationCandidate: "generation.command.submit-generation-candidate",
   commitChangeSetRevision: "commit.command.commit-change-set-revision",
+  createChangeSetRevision: "commit.command.create-change-set-revision",
+  changeSetRevisionDiff: "commit.query.change-set-revision-diff",
   listNovelEvents: "commit.query.commit-evidence",
   workspaceFocus: "foundation.query.workspace-focus",
   focusResolution: "workspace.query.focus-resolution",
@@ -383,6 +395,8 @@ export function registerNovelBrainRoutes(
   });
   const sceneRead = createSceneReadQuery({ scenes: dependencies.scenes });
   const targetSpanResolution = createTargetSpanResolutionQuery({ scenes: dependencies.scenes });
+  const changeSetRevisions = createChangeSetRevisionService({ changeSets: dependencies.changeSets });
+  const changeSetDiff = createChangeSetDiffQuery({ changeSets: dependencies.changeSets });
 
   app.post("/novels", async (request, reply) => {
     const identity = novelBodyIdentitySchema.parse(request.body);
@@ -532,7 +546,8 @@ export function registerNovelBrainRoutes(
       routeBoundaryInput(request),
       async () => {
         const now = new Date();
-        const atomicChanges = candidateAtomicChanges(candidate.change);
+        const atomicChanges =
+          candidate.change.type === "composite" ? candidate.change.changes : [candidate.change];
         const sceneChange = atomicChanges.find(change =>
           change.type === "text" || change.type === "local_text",
         );
@@ -544,28 +559,13 @@ export function registerNovelBrainRoutes(
           return reply.code(409).send({ error: "Target scene not found" });
         }
 
-        const changes = atomicChanges.map((change, index) =>
-          candidateChangeToDomainChange({
-            change,
-            id: `change:${body.changeSetRevisionId}:${index + 1}`,
-            sourceType: "candidate",
-            sourceReference: {
-              identity: body.candidateId,
-              version: body.candidateSource.version,
-              hash: body.candidateSource.hash,
-            },
-            basedOnVersionSet: candidate.basedOnVersionSet,
-          }),
-        );
-        const revision = withChanges(
-          createInitialChangeSetRevision({
-            revisionId: body.changeSetRevisionId,
-            changeSetId: params.changeSetId,
-            novelId: candidate.novelId,
-            createdAt: now,
-          }),
-          changes,
-        );
+        const revision = await changeSetRevisions.adoptCandidate({
+          candidate,
+          changeSetId: params.changeSetId,
+          revisionId: body.changeSetRevisionId,
+          sourceReference: body.candidateSource,
+          createdAt: now,
+        });
 
         const validation = validateCandidate({
           validationId: body.validationId,
@@ -618,6 +618,83 @@ export function registerNovelBrainRoutes(
           }
           throw error;
         }
+      },
+    );
+  });
+
+  /**
+   * Adoption promotes a Candidate into a persisted Change Set Revision. The
+   * Candidate is never the commit target; it only supplies the change content.
+   * The boundary authorizes the workspace of the candidate actually adopted.
+   */
+  app.post("/change-sets/:changeSetId/revisions", async (request, reply) => {
+    const params = z.object({ changeSetId: z.string().min(1) }).parse(request.params);
+    const body = changeSetRevisionRequestSchema.parse(request.body);
+    const candidate = await dependencies.candidates.findById(body.candidateId);
+    if (!candidate) {
+      return reply.code(404).send({ error: "Not Found" });
+    }
+    return pipeline.execute(
+      routeContracts.createChangeSetRevision,
+      routeBoundaryContext(request, candidate.novelId),
+      routeBoundaryInput(request),
+      async () => {
+        const parentRevision =
+          body.parentRevisionId === undefined
+            ? undefined
+            : await changeSetRevisions.getRevision({
+                changeSetId: params.changeSetId,
+                revisionId: body.parentRevisionId,
+              });
+        if (body.parentRevisionId !== undefined && !parentRevision) {
+          return reply.code(404).send({ error: "Parent revision not found" });
+        }
+        const revision = await changeSetRevisions.adoptCandidate({
+          candidate,
+          changeSetId: params.changeSetId,
+          revisionId: body.revisionId,
+          ...(parentRevision === undefined ? {} : { parentRevision }),
+          ...(body.candidateSource === undefined
+            ? {}
+            : { sourceReference: body.candidateSource }),
+          createdAt: new Date(),
+        });
+        return reply.code(201).send(revision);
+      },
+    );
+  });
+
+  /**
+   * Diffing is defined only between two revisions of one Change Set. Both are
+   * resolved before the boundary so an unknown revision is a 404, never a
+   * cross change set comparison.
+   */
+  app.get("/change-sets/:changeSetId/revisions/diff", async (request, reply) => {
+    const params = z.object({ changeSetId: z.string().min(1) }).parse(request.params);
+    const query = changeSetDiffRequestSchema.parse(request.query);
+    const from = await changeSetRevisions.getRevision({
+      changeSetId: params.changeSetId,
+      revisionId: query.fromRevisionId,
+    });
+    const to = await changeSetRevisions.getRevision({
+      changeSetId: params.changeSetId,
+      revisionId: query.toRevisionId,
+    });
+    if (!from || !to) {
+      return reply.code(404).send({ error: "Change Set Revision not found" });
+    }
+    return pipeline.execute(
+      routeContracts.changeSetRevisionDiff,
+      routeBoundaryContext(request, from.novelId),
+      routeBoundaryInput(request),
+      async () => {
+        const entries = await changeSetDiff.diffRevisions({
+          changeSetId: params.changeSetId,
+          fromRevisionId: query.fromRevisionId,
+          toRevisionId: query.toRevisionId,
+        });
+        if (!entries) return reply.code(404).send({ error: "Change Set Revision not found" });
+        return reply.code(200).send(entries);
       },
     );
   });
@@ -1174,83 +1251,6 @@ export function registerNovelBrainRoutes(
         return reply.code(200).send(updated);
       },
     );
-  });
-}
-
-function candidateAtomicChanges(
-  change: Candidate["change"],
-): readonly CandidateAtomicChange[] {
-  return change.type === "composite" ? change.changes : [change];
-}
-
-function candidateChangeToDomainChange(input: {
-  change: CandidateAtomicChange;
-  id: string;
-  sourceType: ChangeSourceType;
-  sourceReference: {
-    identity: string;
-    version: string;
-    hash: string;
-  };
-  basedOnVersionSet: VersionSet;
-}): Change {
-  const { change } = input;
-  if (change.type === "text") {
-    return createChange({
-      id: input.id,
-      sourceType: input.sourceType,
-      sourceReference: input.sourceReference,
-      targetAddress: { targetType: "manuscript", objectId: change.sceneId },
-      payload: { text: change.text },
-      basedOnVersionSet: input.basedOnVersionSet,
-    });
-  }
-  if (change.type === "local_text") {
-    return createChange({
-      id: input.id,
-      sourceType: input.sourceType,
-      sourceReference: input.sourceReference,
-      targetAddress: {
-        targetType: "manuscript",
-        objectId: change.sceneId,
-        subAddress: change.targetSpan.anchorId,
-      },
-      payload: { targetSpan: change.targetSpan, replacement: change.replacement },
-      basedOnVersionSet: input.basedOnVersionSet,
-    });
-  }
-  if (change.type === "canonical_fact") {
-    return createChange({
-      id: input.id,
-      sourceType: input.sourceType,
-      sourceReference: input.sourceReference,
-      targetAddress: { targetType: "canonical_fact", objectId: change.canonicalFactId },
-      payload: change.content,
-      basedOnVersionSet: input.basedOnVersionSet,
-    });
-  }
-  return createChange({
-    id: input.id,
-    sourceType: input.sourceType,
-    sourceReference: input.sourceReference,
-    targetAddress: { targetType: "story_state", objectId: change.stateRecordId },
-    payload: change.content,
-    basedOnVersionSet: input.basedOnVersionSet,
-  });
-}
-
-function withChanges(revision: ChangeSetRevision, changes: readonly Change[]): ChangeSetRevision {
-  try {
-    assertNoDuplicateTargets(changes);
-  } catch (error) {
-    throw new CommitConflictError(
-      "duplicate_target",
-      error instanceof Error ? error.message : "Duplicate target address",
-    );
-  }
-  return Object.freeze({
-    ...revision,
-    changes: Object.freeze([...changes]),
   });
 }
 

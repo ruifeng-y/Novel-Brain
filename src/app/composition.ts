@@ -9,6 +9,7 @@ import { DeterministicRuntime } from "../production/runtime/deterministicRuntime
 import { DeterministicFoundationRuntime } from "../production/runtime/deterministicFoundationRuntime";
 import { createInMemoryNarrativeProposalPersistence } from "../story/application/narrativeProposalPersistence";
 import { createInMemoryRunOrchestrationPersistence } from "../production/application/runPlanPersistence";
+import { createInMemoryChangeSetPersistence } from "../production/application/changeSetPersistence";
 import { createInMemoryAttentionDispositionPersistence } from "../recall/attention/attentionDispositionPersistence";
 import { createInMemoryDependencyImpactPersistence } from "../dependency/application/dependencyImpactPersistence";
 import { createNovelBrainServer } from "../http/server";
@@ -27,6 +28,7 @@ export function createInMemoryEngineDependencies(): ApiDependencies {
     canonicalFacts: commitTransaction.canonicalFacts,
     stateRecords: commitTransaction.stateRecords,
     narrativeCommits: commitTransaction.narrativeCommits,
+    changeSets: createInMemoryChangeSetPersistence().changeSets,
     eventStore: commitTransaction.eventStore,
     runtime: new DeterministicRuntime(),
     commitTransaction,

@@ -143,6 +143,13 @@ export const applicationCapabilityBoundaries = {
         resultChannel: "command-result",
       },
       {
+        id: "commit.command.create-change-set-revision",
+        capability: "commit",
+        kind: "command",
+        effect: "mutation",
+        resultChannel: "command-result",
+      },
+      {
         id: "commit.command.rollback-scene",
         capability: "commit",
         kind: "command",
@@ -153,6 +160,13 @@ export const applicationCapabilityBoundaries = {
     queries: [
       {
         id: "commit.query.commit-evidence",
+        capability: "commit",
+        kind: "query",
+        effect: "read",
+        resultChannel: "query-result",
+      },
+      {
+        id: "commit.query.change-set-revision-diff",
         capability: "commit",
         kind: "query",
         effect: "read",

@@ -36,9 +36,13 @@ const expectedOperationIds = {
   commit: {
     commands: [
       "commit.command.commit-change-set-revision",
+      "commit.command.create-change-set-revision",
       "commit.command.rollback-scene",
     ],
-    queries: ["commit.query.commit-evidence"],
+    queries: [
+      "commit.query.commit-evidence",
+      "commit.query.change-set-revision-diff",
+    ],
   },
   run: {
     commands: [
