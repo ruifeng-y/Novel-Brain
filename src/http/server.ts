@@ -59,6 +59,16 @@ const staticAssets: readonly {
     file: "workspace/sceneSurface.js",
     contentType: "text/javascript; charset=utf-8",
   },
+  {
+    route: "/workspace/candidateReview.js",
+    file: "workspace/candidateReview.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
+  {
+    route: "/workspace/commitReview.js",
+    file: "workspace/commitReview.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
 ];
 
 export function createNovelBrainServer(

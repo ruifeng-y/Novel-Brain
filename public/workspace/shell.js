@@ -18,6 +18,8 @@ import {
 import { createApiClient } from "./apiClient.js";
 import { renderSceneSurface, spanDescriptorFromSelection } from "./sceneSurface.js";
 import { renderStructureLens, stepTreeZoom, treeLevelFor, zoomLevelFor } from "./structureLens.js";
+import { renderCandidateReview } from "./candidateReview.js";
+import { renderCommitReview } from "./commitReview.js";
 
 const STORAGE_KEYS = {
   novelId: "novel-brain.novel-id",
@@ -124,9 +126,9 @@ const SURFACE_RENDERERS = {
   "manuscript editor": { label: "手稿编辑器", scene: true, render: renderPlaceholderSurface },
   "span editor or span provenance": { label: "片段与来源", render: renderPlaceholderSurface },
   "proposal workbench": { label: "提案工作台", render: renderPlaceholderSurface },
-  "compare, diff": { label: "比对与差异", render: renderPlaceholderSurface },
-  "revision content, diff": { label: "修订与差异", render: renderPlaceholderSurface },
-  "commit detail, change": { label: "提交详情与变更", render: renderPlaceholderSurface },
+  "compare, diff": { label: "候选审阅", review: "candidate", render: renderPlaceholderSurface },
+  "revision content, diff": { label: "提交审阅", review: "revision", render: renderPlaceholderSurface },
+  "commit detail, change": { label: "提交审阅", review: "commit", render: renderPlaceholderSurface },
   "impact, consistency report": { label: "影响与一致性", render: renderPlaceholderSurface },
   "Process Center": { label: "流程中心", render: renderPlaceholderSurface },
 };
@@ -142,6 +144,8 @@ let structureError = "";
 let scene = null;
 let sceneError = "";
 let sceneSelection = null;
+let reviewView = null;
+let reviewError = "";
 let whyOpen = false;
 let lastError = "";
 let statusState = "disabled";
@@ -473,6 +477,12 @@ function renderSurface(session, current, view) {
     return head + `<div class="ws-scene" data-role="scene-surface"></div>`;
   }
 
+  // The review surfaces likewise get a frame the shell fills, so the commit
+  // control only ever exists inside a revision's Commit Review.
+  if (typeof renderer.review === "string") {
+    return head + `<div class="ws-review" data-role="review-surface"></div>`;
+  }
+
   return head + renderer.render(session, current);
 }
 
@@ -512,7 +522,7 @@ function renderIdentityStatus() {
  * Renders the six regions from the session and the server resolution. It is a
  * pure function of its arguments, so the same call also runs outside a browser.
  */
-export function renderShell(root, sessionState, resolved, structureInput, sceneInput) {
+export function renderShell(root, sessionState, resolved, structureInput, sceneInput, reviewInput) {
   if (!root) return;
   const current = currentFocus(sessionState);
   const view = resolved || null;
@@ -521,6 +531,8 @@ export function renderShell(root, sessionState, resolved, structureInput, sceneI
   const sceneView = sceneInput ? sceneInput.view || null : scene;
   const sceneFailure = sceneInput ? sceneInput.error || "" : sceneError;
   const sceneAttempt = sceneInput ? sceneInput.selection || null : sceneSelection;
+  const reviewData = reviewInput ? reviewInput.view || null : reviewView;
+  const reviewFailure = reviewInput ? reviewInput.error || "" : reviewError;
 
   const lensRail = root.querySelector('[data-region="lens-rail"]');
   if (lensRail) {
@@ -541,6 +553,23 @@ export function renderShell(root, sessionState, resolved, structureInput, sceneI
         onSelectSpan: handleSelectSpan,
         onRetry: retryScene,
       });
+    }
+    const reviewRoot = childOf(surface, '[data-role="review-surface"]');
+    if (reviewRoot) {
+      const renderReview =
+        reviewData && reviewData.surface === "candidate" ? renderCandidateReview : renderCommitReview;
+      renderReview(
+        reviewRoot,
+        Object.assign({}, reviewData || {}, reviewFailure === "" ? {} : { error: reviewFailure }),
+        {
+          onAdopt: handleAdoptCandidate,
+          onEdit: handleCandidateAction,
+          onReject: handleCandidateAction,
+          onRegenerate: handleCandidateAction,
+          onRunValidation: handleRunValidation,
+          onCommit: handleCommitRevision,
+        },
+      );
     }
   }
 
@@ -665,6 +694,7 @@ async function resolveKind(kind, mode, options) {
   }
   render();
   await syncScene();
+  await syncReview();
 }
 
 /** Re-asks the server about the current focus, keeping the visible surface. */
@@ -743,6 +773,7 @@ async function afterFocusChange(previousKey) {
   }
   await resolveCurrentFocus();
   await syncScene();
+  await syncReview();
 }
 
 /**
@@ -851,6 +882,261 @@ async function syncScene() {
     sceneError = error && error.message ? error.message : "场景加载失败";
   }
   render();
+}
+
+/**
+ * A revision Focus addresses a Change Set and a revision: `changeSetId` and
+ * `revisionId` are one address, and a revision id is unique only inside its
+ * Change Set. The client-side Focus id therefore carries the pair, split at the
+ * first colon. This is the same convention the server uses for the address.
+ */
+function parseRevisionFocus(id) {
+  if (typeof id !== "string") return null;
+  const index = id.indexOf(":");
+  if (index <= 0 || index === id.length - 1) return null;
+  return { changeSetId: id.slice(0, index), revisionId: id.slice(index + 1) };
+}
+
+function candidateFocusAddress(id) {
+  if (typeof id !== "string") return { changeSetId: "", candidateId: "" };
+  const index = id.indexOf(":");
+  if (index <= 0 || index === id.length - 1) return { changeSetId: "", candidateId: id };
+  return { changeSetId: id.slice(0, index), candidateId: id.slice(index + 1) };
+}
+
+function addressKey(changeSetId, revisionId) {
+  return `${changeSetId}:${revisionId}`;
+}
+
+/** Validation evidence is named per revision: the runs this session produced. */
+const validationEvidence = new Map();
+/** The candidate a revision was adopted from, remembered from the adoption. */
+const revisionSources = new Map();
+
+function clearReview() {
+  reviewView = null;
+  reviewError = "";
+}
+
+async function syncReview() {
+  const focus = currentFocus(state);
+  const identity = readIdentity();
+  if (!focus || identity.novelId.length === 0) {
+    clearReview();
+    render();
+    return;
+  }
+
+  if (focus.kind === "candidate") {
+    const address = candidateFocusAddress(focus.id);
+    reviewError = "";
+    reviewView = {
+      surface: "candidate",
+      candidateId: address.candidateId,
+      changeSetId: address.changeSetId,
+      novelId: identity.novelId,
+      adoption: revisionSources.get(`candidate:${address.candidateId}`) || null,
+    };
+    render();
+    return;
+  }
+
+  if (focus.kind === "change-set-revision") {
+    const address = parseRevisionFocus(focus.id);
+    if (!address) {
+      clearReview();
+      reviewError = "无法解析修订地址";
+      render();
+      return;
+    }
+    reviewView = {
+      surface: "revision",
+      changeSetId: address.changeSetId,
+      revisionId: address.revisionId,
+      validationRunIds: validationEvidence.get(addressKey(address.changeSetId, address.revisionId)) || [],
+      reviewDecisionIds: [],
+      candidateId: revisionSources.get(addressKey(address.changeSetId, address.revisionId)) || "",
+      gate: null,
+    };
+    render();
+    await refreshGate();
+    return;
+  }
+
+  if (focus.kind === "commit") {
+    reviewView = { surface: "commit", novelId: identity.novelId, provenance: null };
+    render();
+    try {
+      const provenance = await client.getCommitProvenance({
+        novelId: identity.novelId,
+        commitId: focus.id,
+        authorId: identity.authorId,
+      });
+      reviewView = Object.assign({}, reviewView, { provenance: provenance });
+      reviewError = "";
+    } catch (error) {
+      reviewError = error && error.message ? error.message : "提交来源加载失败";
+    }
+    render();
+    return;
+  }
+
+  clearReview();
+  render();
+}
+
+/**
+ * The gate is the server's answer for the named evidence: the client never
+ * decides a condition and never fills in a missing one.
+ */
+async function refreshGate() {
+  if (!reviewView || reviewView.surface !== "revision") return;
+  const identity = readIdentity();
+  const view = reviewView;
+
+  try {
+    const decisions = await client.getApprovalEvidence({
+      changeSetId: view.changeSetId,
+      revisionId: view.revisionId,
+      authorId: identity.authorId,
+    });
+    reviewView = Object.assign({}, reviewView, {
+      reviewDecisionIds: (Array.isArray(decisions) ? decisions : []).map(entry => entry.id),
+    });
+  } catch {
+    // Approval evidence is optional here: the gate reports what it has.
+  }
+
+  const runs = reviewView.validationRunIds || [];
+  if (runs.length === 0) {
+    reviewView = Object.assign({}, reviewView, { gate: null });
+    reviewError = "";
+    render();
+    return;
+  }
+
+  try {
+    const gate = await client.getCommitGate({
+      changeSetId: view.changeSetId,
+      revisionId: view.revisionId,
+      validationRunIds: runs,
+      authorId: identity.authorId,
+    });
+    reviewView = Object.assign({}, reviewView, { gate: gate });
+    reviewError = "";
+  } catch (error) {
+    reviewView = Object.assign({}, reviewView, { gate: null });
+    reviewError = error && error.message ? error.message : "门禁求值失败";
+  }
+  render();
+}
+
+/**
+ * Adoption is the one write the Candidate Review surface performs. The
+ * Candidate becomes a Change Set Revision; nothing is committed here.
+ */
+async function handleAdoptCandidate() {
+  const focus = currentFocus(state);
+  const identity = readIdentity();
+  if (!focus || focus.kind !== "candidate") return;
+  const address = candidateFocusAddress(focus.id);
+  if (address.changeSetId.length === 0 || address.candidateId.length === 0) return;
+
+  const revisionId = `${address.changeSetId}:r${Date.now()}`;
+  try {
+    const revision = await client.adoptCandidate({
+      changeSetId: address.changeSetId,
+      candidateId: address.candidateId,
+      revisionId: revisionId,
+      authorId: identity.authorId,
+    });
+    const source =
+      Array.isArray(revision && revision.changes) && revision.changes.length > 0
+        ? revision.changes[0].sourceReference && revision.changes[0].sourceReference.identity
+        : "";
+    if (typeof source === "string" && source.length > 0) {
+      revisionSources.set(addressKey(address.changeSetId, revision.revisionId), source);
+    }
+    revisionSources.set(`candidate:${address.candidateId}`, {
+      changeSetId: address.changeSetId,
+      revisionId: revision.revisionId,
+    });
+    reviewError = "";
+    await resolveKind("change-set-revision", "review", {
+      id: addressKey(address.changeSetId, revision.revisionId),
+    });
+  } catch (error) {
+    reviewError = error && error.message ? error.message : "采纳失败";
+    render();
+  }
+}
+
+/** W3 has no application action for edit / reject / regenerate yet. */
+function handleCandidateAction() {
+  return undefined;
+}
+
+async function handleRunValidation() {
+  if (!reviewView || reviewView.surface !== "revision") return;
+  if (typeof reviewView.candidateId !== "string" || reviewView.candidateId.length === 0) return;
+  const identity = readIdentity();
+  const view = reviewView;
+  try {
+    const run = await client.runValidationForRevision({
+      changeSetId: view.changeSetId,
+      revisionId: view.revisionId,
+      validationId: `${view.revisionId}:validation:${Date.now()}`,
+      planVersionId: "plan-v1",
+      candidateId: view.candidateId,
+      authorId: identity.authorId,
+    });
+    const key = addressKey(view.changeSetId, view.revisionId);
+    validationEvidence.set(key, [run.id]);
+    reviewView = Object.assign({}, reviewView, { validationRunIds: [run.id] });
+    reviewError = "";
+  } catch (error) {
+    reviewError = error && error.message ? error.message : "校验运行失败";
+  }
+  await refreshGate();
+}
+
+async function handleCommitRevision() {
+  if (!reviewView || reviewView.surface !== "revision") return;
+  const gate = reviewView.gate;
+  if (!gate || gate.allowed !== true) return;
+  const identity = readIdentity();
+  const view = reviewView;
+  try {
+    const commit = await client.commitRevision({
+      changeSetId: view.changeSetId,
+      authorId: identity.authorId,
+      body: {
+        commitId: `${view.revisionId}:commit:${Date.now()}`,
+        changeSetRevisionId: view.revisionId,
+        validationRunIds: view.validationRunIds,
+        reviewDecisionIds: view.reviewDecisionIds,
+        currentRevisionFacts: { unresolvedConflict: false, stale: false },
+        targetInvariantViolations: [],
+        approvalRequirements: [],
+      },
+    });
+    reviewError = "";
+    await resolveKind("commit", "review", { id: commit.id });
+  } catch (error) {
+    // A blocked commit answers with the authoritative gate. That answer, not a
+    // fresh preview, is what the surface must show: the preview cannot see the
+    // facts the commit derives, so trusting it would leave the surface saying
+    // "everything is green" while the commit keeps being refused.
+    const authoritative =
+      error && error.payload && error.payload.gate ? error.payload.gate : null;
+    reviewError = error && error.message ? error.message : "提交失败";
+    if (authoritative) {
+      reviewView = Object.assign({}, reviewView, { gate: authoritative });
+      render();
+      return;
+    }
+    await refreshGate();
+  }
 }
 
 /**

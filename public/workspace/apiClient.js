@@ -133,5 +133,133 @@ export function createApiClient(options) {
         },
       );
     },
+
+    /**
+     * Adoption: a Candidate becomes a persisted Change Set Revision. This is
+     * the only write the Candidate Review surface performs; a Candidate is
+     * never committed.
+     */
+    adoptCandidate(request_) {
+      const requestId = newRequestId();
+      const body = {
+        candidateId: request_.candidateId,
+        revisionId: request_.revisionId,
+      };
+      if (typeof request_.parentRevisionId === "string" && request_.parentRevisionId.length > 0) {
+        body.parentRevisionId = request_.parentRevisionId;
+      }
+      return request(`/change-sets/${encodeURIComponent(request_.changeSetId)}/revisions`, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "x-author-id": request_.authorId,
+          "x-request-id": requestId,
+        },
+        body: JSON.stringify(body),
+      });
+    },
+
+    /** The gate answer of the server, for one revision and its named evidence. */
+    getCommitGate(request_) {
+      const requestId = newRequestId();
+      const query = [
+        `validationRunIds=${encodeURIComponent((request_.validationRunIds || []).join(","))}`,
+        `unresolvedConflict=${request_.unresolvedConflict === true ? "true" : "false"}`,
+        `stale=${request_.stale === true ? "true" : "false"}`,
+      ];
+      return request(
+        `/change-sets/${encodeURIComponent(request_.changeSetId)}/revisions/${encodeURIComponent(
+          request_.revisionId,
+        )}/commit-gate?${query.join("&")}`,
+        {
+          method: "GET",
+          headers: {
+            accept: "application/json",
+            "x-author-id": request_.authorId,
+            "x-request-id": requestId,
+          },
+        },
+      );
+    },
+
+    /** Runs validation for one revision against its recorded content source. */
+    runValidationForRevision(request_) {
+      const requestId = newRequestId();
+      return request(
+        `/change-sets/${encodeURIComponent(request_.changeSetId)}/revisions/${encodeURIComponent(
+          request_.revisionId,
+        )}/validation-runs`,
+        {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+            "x-author-id": request_.authorId,
+            "x-request-id": requestId,
+          },
+          body: JSON.stringify({
+            validationId: request_.validationId,
+            planVersionId: request_.planVersionId,
+            candidateId: request_.candidateId,
+            mustPreserve: request_.mustPreserve || [],
+          }),
+        },
+      );
+    },
+
+    /** The recorded decision events of one revision: the approval evidence. */
+    getApprovalEvidence(request_) {
+      const requestId = newRequestId();
+      return request(
+        `/change-sets/${encodeURIComponent(request_.changeSetId)}/revisions/${encodeURIComponent(
+          request_.revisionId,
+        )}/review-decisions`,
+        {
+          method: "GET",
+          headers: {
+            accept: "application/json",
+            "x-author-id": request_.authorId,
+            "x-request-id": requestId,
+          },
+        },
+      );
+    },
+
+    /**
+     * Commits a revision by referencing real artefacts. The request carries no
+     * candidate, no client-supplied validation id, and no review template.
+     */
+    commitRevision(request_) {
+      const requestId = newRequestId();
+      return request(`/change-sets/${encodeURIComponent(request_.changeSetId)}/commit`, {
+        method: "POST",
+        headers: {
+          accept: "application/json",
+          "content-type": "application/json",
+          "x-author-id": request_.authorId,
+          "x-request-id": requestId,
+        },
+        body: JSON.stringify(request_.body),
+      });
+    },
+
+    /** What a commit was made of, and what it recorded. */
+    getCommitProvenance(request_) {
+      const requestId = newRequestId();
+      return request(
+        `/novels/${encodeURIComponent(request_.novelId)}/commits/${encodeURIComponent(
+          request_.commitId,
+        )}`,
+        {
+          method: "GET",
+          headers: {
+            accept: "application/json",
+            "x-author-id": request_.authorId,
+            "x-request-id": requestId,
+          },
+        },
+      );
+    },
   };
 }

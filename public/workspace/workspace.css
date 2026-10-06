@@ -448,3 +448,97 @@
     display: block;
   }
 }
+
+/* Candidate Review and Commit Review surfaces (W3). */
+
+.ws-review {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.ws-review-note {
+  margin: 0;
+  padding: 8px 10px;
+  border-left: 3px solid var(--ws-border, #3a3f4b);
+  color: var(--ws-muted, #9aa2b1);
+  font-size: 13px;
+}
+
+.ws-review-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.ws-review-section h3 {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  color: var(--ws-muted, #9aa2b1);
+}
+
+.ws-review-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.ws-review-actions .ws-button[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.ws-review-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ws-review-item {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  font-size: 13px;
+}
+
+.ws-review-target {
+  color: var(--ws-muted, #9aa2b1);
+}
+
+.ws-gate-list {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.ws-gate-row {
+  display: grid;
+  grid-template-columns: 6.5em 4em 1fr;
+  gap: 8px;
+  align-items: baseline;
+  font-size: 13px;
+}
+
+.ws-gate-row[data-state="success"] .ws-gate-status {
+  color: var(--ws-success, #4caf7d);
+}
+
+.ws-gate-row[data-state="error"] .ws-gate-status {
+  color: var(--ws-danger, #e0575b);
+}
+
+.ws-gate-label {
+  font-weight: 600;
+}
+
+.ws-gate-reason {
+  color: var(--ws-muted, #9aa2b1);
+}
