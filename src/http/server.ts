@@ -54,6 +54,11 @@ const staticAssets: readonly {
     file: "workspace/structureLens.js",
     contentType: "text/javascript; charset=utf-8",
   },
+  {
+    route: "/workspace/sceneSurface.js",
+    file: "workspace/sceneSurface.js",
+    contentType: "text/javascript; charset=utf-8",
+  },
 ];
 
 export function createNovelBrainServer(

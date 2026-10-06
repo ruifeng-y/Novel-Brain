@@ -87,5 +87,51 @@ export function createApiClient(options) {
         },
       });
     },
+
+    /**
+     * The current read view of one Scene: its identity, placement, title, and
+     * manuscript revision. The client draws this answer; it never assembles a
+     * scene or its text from an independent source.
+     */
+    getScene(request_) {
+      const requestId = newRequestId();
+      return request(
+        `/novels/${encodeURIComponent(request_.novelId)}/scenes/${encodeURIComponent(
+          request_.sceneId,
+        )}`,
+        {
+          method: "GET",
+          headers: {
+            accept: "application/json",
+            "x-author-id": request_.authorId,
+            "x-request-id": requestId,
+          },
+        },
+      );
+    },
+
+    /**
+     * Resolves a target span against the scene's current revision. The
+     * resolvable / drifted / missing classification is the server's answer; the
+     * client only carries the descriptor and renders the reply.
+     */
+    resolveSpan(request_) {
+      const requestId = newRequestId();
+      return request(
+        `/novels/${encodeURIComponent(request_.novelId)}/scenes/${encodeURIComponent(
+          request_.sceneId,
+        )}/span-resolution`,
+        {
+          method: "POST",
+          headers: {
+            accept: "application/json",
+            "content-type": "application/json",
+            "x-author-id": request_.authorId,
+            "x-request-id": requestId,
+          },
+          body: JSON.stringify(request_.descriptor),
+        },
+      );
+    },
   };
 }

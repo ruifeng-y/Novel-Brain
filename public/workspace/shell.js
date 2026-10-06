@@ -16,6 +16,7 @@ import {
   zoomFor,
 } from "./focusModel.js";
 import { createApiClient } from "./apiClient.js";
+import { renderSceneSurface, spanDescriptorFromSelection } from "./sceneSurface.js";
 import { renderStructureLens, stepTreeZoom, treeLevelFor, zoomLevelFor } from "./structureLens.js";
 
 const STORAGE_KEYS = {
@@ -120,7 +121,7 @@ const SURFACE_RENDERERS = {
   "five-direction skeleton, proposals": { label: "故事基础", render: renderPlaceholderSurface },
   "object content, proposals": { label: "对象内容", render: renderPlaceholderSurface },
   "structure, plan": { label: "结构与计划", render: renderPlaceholderSurface },
-  "manuscript editor": { label: "手稿编辑器", render: renderPlaceholderSurface },
+  "manuscript editor": { label: "手稿编辑器", scene: true, render: renderPlaceholderSurface },
   "span editor or span provenance": { label: "片段与来源", render: renderPlaceholderSurface },
   "proposal workbench": { label: "提案工作台", render: renderPlaceholderSurface },
   "compare, diff": { label: "比对与差异", render: renderPlaceholderSurface },
@@ -138,6 +139,9 @@ let state = createSessionState("");
 let resolution = null;
 let structure = null;
 let structureError = "";
+let scene = null;
+let sceneError = "";
+let sceneSelection = null;
 let whyOpen = false;
 let lastError = "";
 let statusState = "disabled";
@@ -276,14 +280,19 @@ function renderStructureRegion(lensRail, session, structureView, structureFailur
   });
 }
 
+/**
+ * The row the browse tree marks as current: the focused object when the tree
+ * actually draws it. The tree holds arcs, chapters and scenes; a Novel focus has
+ * no row of its own, so no row is marked. Zoom is read through the session's
+ * effective zoom key, never through this one.
+ */
 function structureFocusKey(session) {
-  const stack = Array.isArray(session.focusStack) ? session.focusStack : [];
-  for (const entry of stack) {
-    if (entry && entry.kind === "novel" && typeof entry.key === "string" && entry.key.length > 0) {
-      return entry.key;
-    }
+  const current = currentFocus(session);
+  if (!current || typeof current.key !== "string" || current.key.length === 0) return "";
+  if (current.kind === "arc" || current.kind === "chapter" || current.kind === "scene") {
+    return current.key;
   }
-  return `novel:${typeof session.workspaceId === "string" ? session.workspaceId : ""}`;
+  return "";
 }
 
 function renderFocusBar(session, current, view) {
@@ -458,6 +467,12 @@ function renderSurface(session, current, view) {
     `</div>` +
     `</header>`;
 
+  // The scene surface needs a real element to bind the span selection to, so
+  // the shell renders the frame here and lets renderSceneSurface fill it.
+  if (renderer.scene === true && current.kind === "scene") {
+    return head + `<div class="ws-scene" data-role="scene-surface"></div>`;
+  }
+
   return head + renderer.render(session, current);
 }
 
@@ -497,12 +512,15 @@ function renderIdentityStatus() {
  * Renders the six regions from the session and the server resolution. It is a
  * pure function of its arguments, so the same call also runs outside a browser.
  */
-export function renderShell(root, sessionState, resolved, structureInput) {
+export function renderShell(root, sessionState, resolved, structureInput, sceneInput) {
   if (!root) return;
   const current = currentFocus(sessionState);
   const view = resolved || null;
   const structureView = structureInput ? structureInput.view || null : structure;
   const structureFailure = structureInput ? structureInput.error || "" : structureError;
+  const sceneView = sceneInput ? sceneInput.view || null : scene;
+  const sceneFailure = sceneInput ? sceneInput.error || "" : sceneError;
+  const sceneAttempt = sceneInput ? sceneInput.selection || null : sceneSelection;
 
   const lensRail = root.querySelector('[data-region="lens-rail"]');
   if (lensRail) {
@@ -514,7 +532,17 @@ export function renderShell(root, sessionState, resolved, structureInput) {
   if (focusBar) focusBar.innerHTML = renderFocusBar(sessionState, current, view);
 
   const surface = root.querySelector('[data-region="working-surface"]');
-  if (surface) surface.innerHTML = renderSurface(sessionState, current, view);
+  if (surface) {
+    surface.innerHTML = renderSurface(sessionState, current, view);
+    const sceneRoot = childOf(surface, '[data-role="scene-surface"]');
+    if (sceneRoot) {
+      renderSceneSurface(sceneRoot, sceneView, sceneAttempt, {
+        error: sceneFailure,
+        onSelectSpan: handleSelectSpan,
+        onRetry: retryScene,
+      });
+    }
+  }
 
   const panels = root.querySelector('[data-region="context-panels"]');
   if (panels) panels.innerHTML = renderPanels(view);
@@ -636,6 +664,7 @@ async function resolveKind(kind, mode, options) {
     setStatus("error", lastError);
   }
   render();
+  await syncScene();
 }
 
 /** Re-asks the server about the current focus, keeping the visible surface. */
@@ -713,6 +742,7 @@ async function afterFocusChange(previousKey) {
     return;
   }
   await resolveCurrentFocus();
+  await syncScene();
 }
 
 /**
@@ -779,6 +809,88 @@ async function loadStructure() {
   render();
 }
 
+function clearScene() {
+  scene = null;
+  sceneError = "";
+  sceneSelection = null;
+}
+
+/**
+ * Loads the scene read view when the current Focus is a Scene, and clears it
+ * otherwise. The surface is only painted for the scene the Focus actually
+ * addresses: a different focus never inherits the previous scene's text.
+ */
+async function syncScene() {
+  const focus = currentFocus(state);
+  if (!focus || focus.kind !== "scene" || typeof focus.id !== "string" || focus.id.length === 0) {
+    clearScene();
+    render();
+    return;
+  }
+  const identity = readIdentity();
+  if (identity.novelId.length === 0) {
+    clearScene();
+    render();
+    return;
+  }
+
+  scene = null;
+  sceneError = "";
+  sceneSelection = null;
+  render();
+
+  try {
+    scene = await client.getScene({
+      novelId: identity.novelId,
+      sceneId: focus.id,
+      authorId: identity.authorId,
+    });
+    sceneError = "";
+  } catch (error) {
+    scene = null;
+    sceneError = error && error.message ? error.message : "场景加载失败";
+  }
+  render();
+}
+
+/**
+ * Resolves a selection made in the scene text. The descriptor is derived from
+ * the selection, and the resolvable / drifted / missing outcome is whatever the
+ * server answers: the shell never classifies the span itself.
+ */
+async function handleSelectSpan(bounds) {
+  const focus = currentFocus(state);
+  if (!focus || focus.kind !== "scene" || !scene) return;
+  const descriptor = spanDescriptorFromSelection(scene.text, bounds);
+  if (!descriptor) return;
+
+  const identity = readIdentity();
+  sceneSelection = { descriptor: descriptor, resolution: null, pending: true };
+  render();
+
+  try {
+    const resolution = await client.resolveSpan({
+      novelId: identity.novelId,
+      sceneId: focus.id,
+      descriptor: descriptor,
+      authorId: identity.authorId,
+    });
+    sceneSelection = { descriptor: descriptor, resolution: resolution, pending: false };
+  } catch (error) {
+    sceneSelection = {
+      descriptor: descriptor,
+      resolution: null,
+      pending: false,
+      error: error && error.message ? error.message : "片段解析失败",
+    };
+  }
+  render();
+}
+
+function retryScene() {
+  syncScene();
+}
+
 function jump() {
   const target = byId("ws-target");
   const kind = target && target.value ? target.value : "novel";
@@ -800,6 +912,7 @@ function applyIdentity() {
   resolution = null;
   structure = null;
   structureError = "";
+  clearScene();
   lastError = "";
   resolveKind("novel", undefined, { navigate: true });
   loadStructure();
@@ -884,6 +997,10 @@ function handleClick(event) {
   }
   if (action === "structure-retry") {
     loadStructure();
+    return;
+  }
+  if (action === "scene-retry") {
+    retryScene();
     return;
   }
   if (action === "apply-identity") {
