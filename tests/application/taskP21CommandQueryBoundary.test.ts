@@ -83,6 +83,7 @@ const expectedOperationIds = {
     queries: [
       "foundation.query.workspace-focus",
       "foundation.query.proposal-comparison",
+      "foundation.query.foundation-projection",
     ],
   },
   manuscript: {

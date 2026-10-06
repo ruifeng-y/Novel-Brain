@@ -375,6 +375,13 @@ export const applicationCapabilityBoundaries = {
         effect: "read",
         resultChannel: "query-result",
       },
+      {
+        id: "foundation.query.foundation-projection",
+        capability: "foundation",
+        kind: "query",
+        effect: "read",
+        resultChannel: "query-result",
+      },
     ],
   },
   manuscript: {

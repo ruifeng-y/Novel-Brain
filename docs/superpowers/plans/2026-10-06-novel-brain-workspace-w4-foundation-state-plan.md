@@ -70,7 +70,9 @@ Two consequences shape this wave:
 export interface FoundationDirectionState {
   readonly direction: string;                 // the five directions
   readonly proposalIds: readonly string[];
-  readonly state: "open" | "proposed" | "adopted" | "deferred";
+  // Implemented as `status`: the same four values, named so it is never
+  // confused with narrative state.
+  readonly status: "open" | "proposed" | "adopted" | "deferred";
 }
 
 export interface FoundationProjection {
@@ -78,8 +80,16 @@ export interface FoundationProjection {
   readonly entryMode: "idea" | "existing_text" | "blank" | "none";
   readonly entryProvenance?: string;          // how the design started, not a session
   readonly directions: readonly FoundationDirectionState[];
-  readonly proposalsByStage: Readonly<Record<string, readonly string[]>>;
-  readonly openQuestions: readonly { readonly proposalId: string; readonly question: string }[];
+  // Implemented as `proposalsByType`: a stage is not persisted state
+  // (`ProposalWorkflowPosition` is supplied by the caller), so grouping by
+  // stage would have to be invented. `proposalType` is the persisted fact.
+  readonly proposalsByType: Readonly<Record<string, readonly string[]>>;
+  readonly openQuestions: readonly {
+    readonly proposalId: string;
+    readonly questionId: string;
+    readonly text: string;
+    readonly state: string;
+  }[];
   readonly adoptionReadiness: { readonly ready: boolean; readonly reason?: string };
 }
 
@@ -93,7 +103,7 @@ export function createFoundationProjectionQuery(dependencies: {
 
 Contract: `foundation.query.foundation-projection`.
 
-- [ ] **Step 1: Write the failing test** — a Novel with two proposals, one direction adopted and one deferred, projects: entry mode and provenance, per-direction state, proposals grouped by stage, the proposal's open questions **with their owning proposal id**, and adoption readiness.
+- [ ] **Step 1: Write the failing test** — a Novel with two proposals, one direction adopted and one deferred, projects: entry mode and provenance, per-direction status, proposals grouped by type, the proposal's open questions **with their owning proposal id**, and adoption readiness.
 - [ ] **Step 2 RED**, **Step 3 implement**, **Step 4 GREEN + typecheck + full + integration**, **Step 5 commit**
 
 ```bash

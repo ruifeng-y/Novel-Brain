@@ -32,6 +32,7 @@ import {
 } from "../app/reviewDecisionService";
 import { createCommitGateQuery, presentCommitGate } from "../app/commitGateQuery";
 import { createCommitProvenanceQuery } from "../app/commitProvenanceQuery";
+import { createFoundationProjectionQuery } from "../app/foundationProjectionQuery";
 import type { FoundationWorkspaceFocus } from "../story/application/foundationWorkspaceContract";
 import type { FoundationGenerationOptions } from "../story/application/foundationEntryService";
 import {
@@ -359,6 +360,7 @@ const routeContracts = {
   approvalEvidence: "approval.query.approval-evidence",
   commitGate: "commit.query.commit-gate",
   commitProvenance: "commit.query.commit-provenance",
+  foundationProjection: "foundation.query.foundation-projection",
   listNovelEvents: "commit.query.commit-evidence",
   workspaceFocus: "foundation.query.workspace-focus",
   focusResolution: "workspace.query.focus-resolution",
@@ -530,6 +532,14 @@ export function registerNovelBrainRoutes(
     reviews: dependencies.reviews,
     eventStore: dependencies.eventStore,
   });
+  const foundationProjection =
+    productDependencies === undefined
+      ? undefined
+      : createFoundationProjectionQuery({
+          novels: dependencies.novels,
+          proposals: productDependencies.foundationPersistence.proposals,
+          decisions: productDependencies.foundationPersistence.decisions,
+        });
 
   app.post("/novels", async (request, reply) => {
     const identity = novelBodyIdentitySchema.parse(request.body);
@@ -1078,6 +1088,29 @@ export function registerNovelBrainRoutes(
         });
         if (!provenance) return reply.code(404).send({ error: "Commit not found" });
         return reply.code(200).send(provenance);
+      },
+    );
+  });
+
+  /**
+   * The Story Foundation projection is derived: it aggregates the Novel's
+   * creation entry state, its five-direction skeleton, its proposal set, the
+   * proposals' own open questions, and adoption readiness. It owns no narrative
+   * truth, holds no session state, and never writes.
+   */
+  app.get("/novels/:novelId/foundation-projection", async (request, reply) => {
+    const params = z.object({ novelId: z.string().min(1) }).parse(request.params);
+    if (!foundationProjection) {
+      return reply.code(404).send({ error: "Foundation projection is not available" });
+    }
+    return pipeline.execute(
+      routeContracts.foundationProjection,
+      routeBoundaryContext(request, params.novelId),
+      routeBoundaryInput(request),
+      async () => {
+        const projection = await foundationProjection.project({ novelId: params.novelId });
+        if (!projection) return reply.code(404).send({ error: "Novel not found" });
+        return reply.code(200).send(projection);
       },
     );
   });
