@@ -4,7 +4,7 @@ import { createPrismaAttentionDispositionPersistence } from "../../src/recall/at
 import { runTask7173AttentionHardeningContract } from "../support/task7173AttentionHardeningContract";
 
 process.env.DATABASE_URL ??=
-  "postgresql://novelbrain:novelbrain@localhost:5434/novelbrain?schema=public";
+  "postgresql://novelbrain:novelbrain@localhost:5434/novelbrain_test?schema=public";
 
 const prisma = new PrismaClient();
 const aggregateType = "AttentionDispositionTask7173";

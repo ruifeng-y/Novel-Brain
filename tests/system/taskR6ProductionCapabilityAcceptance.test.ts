@@ -41,7 +41,7 @@ const architectureSpecPath = fileURLToPath(
 );
 
 const configuration = parseProductionConfiguration({
-  DATABASE_URL: "postgresql://novelbrain:novelbrain@localhost:5434/novelbrain?schema=public",
+  DATABASE_URL: "postgresql://novelbrain:novelbrain@localhost:5434/novelbrain_test?schema=public",
   APPLICATION_PORT: "8080",
   PUBLIC_ORIGIN: "https://novel-brain.example",
   WORKER_CONCURRENCY: "2",

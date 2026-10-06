@@ -7,7 +7,7 @@ import { createCandidate, type Candidate } from "../../src/production/domain/can
 import { createVersionReference, createVersionSet } from "../../src/shared/domain/versioning";
 
 process.env.DATABASE_URL ??=
-  "postgresql://novelbrain:novelbrain@localhost:5434/novelbrain?schema=public";
+  "postgresql://novelbrain:novelbrain@localhost:5434/novelbrain_test?schema=public";
 
 const novelId = "novel-w3-validation";
 const changeSetId = "cs-w3-validation";

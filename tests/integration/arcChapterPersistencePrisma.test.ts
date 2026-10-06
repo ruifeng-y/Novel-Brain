@@ -6,7 +6,7 @@ import { createChapter } from "../../src/manuscript/domain/chapter";
 import { reconcileStructure } from "../../src/manuscript/application/structureReconciliation";
 
 process.env.DATABASE_URL ??=
-  "postgresql://novelbrain:novelbrain@localhost:5434/novelbrain?schema=public";
+  "postgresql://novelbrain:novelbrain@localhost:5434/novelbrain_test?schema=public";
 
 const novelId = "novel-w1-arc-chapter";
 const at = new Date("2026-10-06T00:00:00.000Z");

@@ -29,7 +29,7 @@ import type {
 } from "../../src/shared/application/repository";
 
 process.env.DATABASE_URL ??=
-  "postgresql://novelbrain:novelbrain@localhost:5434/novelbrain?schema=public";
+  "postgresql://novelbrain:novelbrain@localhost:5434/novelbrain_test?schema=public";
 const prisma = new PrismaClient();
 
 const now = new Date("2026-10-05T00:00:00.000Z");

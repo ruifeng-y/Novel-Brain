@@ -11,7 +11,7 @@ import { createDomainEvent } from "../../src/safety/domain/domainEvent";
 import type { Scene } from "../../src/manuscript/domain/scene";
 
 process.env.DATABASE_URL ??=
-  "postgresql://novelbrain:novelbrain@localhost:5434/novelbrain?schema=public";
+  "postgresql://novelbrain:novelbrain@localhost:5434/novelbrain_test?schema=public";
 const prisma = new PrismaClient();
 
 describe("PostgreSQL persistence", () => {

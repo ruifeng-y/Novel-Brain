@@ -14,7 +14,7 @@ import {
 } from "../support/capabilityVerificationContract";
 
 process.env.DATABASE_URL ??=
-  "postgresql://novelbrain:novelbrain@localhost:5434/novelbrain?schema=public";
+  "postgresql://novelbrain:novelbrain@localhost:5434/novelbrain_test?schema=public";
 
 const prisma = new PrismaClient();
 const eventStore = new PrismaEventStore(prisma);
