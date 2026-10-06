@@ -25,6 +25,11 @@ import {
   ValidationBindingError,
   type ValidationRunStore,
 } from "../app/validationRunService";
+import {
+  createReviewDecisionService,
+  ReviewDecisionBindingError,
+  type ReviewDecisionStore,
+} from "../app/reviewDecisionService";
 import type { FoundationWorkspaceFocus } from "../story/application/foundationWorkspaceContract";
 import type { FoundationGenerationOptions } from "../story/application/foundationEntryService";
 import {
@@ -92,6 +97,7 @@ export interface ApiDependencies {
   readonly narrativeCommits: Repository<NarrativeCommit>;
   readonly changeSets: ChangeSetRevisionRepository;
   readonly validations: ValidationRunStore;
+  readonly reviews: ReviewDecisionStore;
   readonly eventStore: EventStore;
   readonly runtime: RuntimeAdapter;
   readonly commitTransaction: CommitChangeSetRevisionTransaction;
@@ -258,6 +264,47 @@ const runValidationRequestSchema = z.object({
 });
 
 /**
+ * The transport mirrors the ReviewDecision preconditions so a malformed
+ * decision is a 400 instead of reaching the domain and failing as a 500.
+ * No decision semantics are added here.
+ */
+const recordReviewDecisionRequestSchema = z
+  .object({
+    reviewDecisionId: z.string().min(1),
+    approvalScope: approvalScopeSchema,
+    decision: z.enum(["approve", "reject", "request_regeneration"]),
+    decidedBy: z.enum(["human", "policy"]),
+    actorId: z.string().min(1),
+    reason: z.string().default(""),
+    evidenceReferences: z.array(z.string().min(1)).default([]),
+    policyVersion: z.string().min(1).optional(),
+    decisionRule: z.string().min(1).optional(),
+  })
+  .superRefine((value, context) => {
+    if (value.decision === "reject" && value.reason.trim().length === 0) {
+      context.addIssue({
+        code: "custom",
+        path: ["reason"],
+        message: "A rejection requires a reason",
+      });
+    }
+    if (value.decidedBy === "policy" && value.policyVersion === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["policyVersion"],
+        message: "A policy decision requires policyVersion",
+      });
+    }
+    if (value.decidedBy === "policy" && value.decisionRule === undefined) {
+      context.addIssue({
+        code: "custom",
+        path: ["decisionRule"],
+        message: "A policy decision requires decisionRule",
+      });
+    }
+  });
+
+/**
  * Each route binds to a real production API boundary contract. The manuscript
  * scene route has no dedicated contract in the frozen application boundary, so
  * it binds to the closest foundation command that adopts design content.
@@ -272,6 +319,8 @@ const routeContracts = {
   changeSetRevisionDiff: "commit.query.change-set-revision-diff",
   runValidation: "validation.command.run-validation",
   validationRun: "validation.query.validation-run",
+  recordReviewDecision: "approval.command.record-review-decision",
+  approvalEvidence: "approval.query.approval-evidence",
   listNovelEvents: "commit.query.commit-evidence",
   workspaceFocus: "foundation.query.workspace-focus",
   focusResolution: "workspace.query.focus-resolution",
@@ -378,6 +427,11 @@ export function registerNovelBrainRoutes(
         .code(409)
         .send({ error: "Validation Binding Conflict", reason: error.message });
     }
+    if (error instanceof ReviewDecisionBindingError) {
+      return reply
+        .code(409)
+        .send({ error: "Approval Binding Conflict", reason: error.message });
+    }
     if (isCommitConflictError(error)) {
       return reply.code(409).send({
         error: "Commit Conflict",
@@ -422,6 +476,10 @@ export function registerNovelBrainRoutes(
     validations: dependencies.validations,
     scenes: dependencies.scenes,
     candidates: dependencies.candidates,
+  });
+  const reviewDecisions = createReviewDecisionService({
+    reviews: dependencies.reviews,
+    changeSets: dependencies.changeSets,
   });
 
   app.post("/novels", async (request, reply) => {
@@ -795,6 +853,84 @@ export function registerNovelBrainRoutes(
           });
           if (!run) return reply.code(404).send({ error: "Validation Run not found" });
           return reply.code(200).send(run);
+        },
+      );
+    },
+  );
+
+  /**
+   * Approval is a stage the author performs before deciding to commit: a
+   * ReviewDecision is an immutable Decision Event recorded against the
+   * addressed Change Set Revision and an Approval Scope. The Candidate is
+   * never the approval subject. The authorization resource is the workspace
+   * of the revision actually decided about.
+   */
+  app.post(
+    "/change-sets/:changeSetId/revisions/:revisionId/review-decisions",
+    async (request, reply) => {
+      const params = z
+        .object({ changeSetId: z.string().min(1), revisionId: z.string().min(1) })
+        .parse(request.params);
+      const body = recordReviewDecisionRequestSchema.parse(request.body);
+      const revision = await changeSetRevisions.getRevision({
+        changeSetId: params.changeSetId,
+        revisionId: params.revisionId,
+      });
+      if (!revision) {
+        return reply.code(404).send({ error: "Change Set Revision not found" });
+      }
+      return pipeline.execute(
+        routeContracts.recordReviewDecision,
+        routeBoundaryContext(request, revision.novelId),
+        routeBoundaryInput(request),
+        async () => {
+          const decision = await reviewDecisions.recordReview({
+            reviewDecisionId: body.reviewDecisionId,
+            changeSetId: params.changeSetId,
+            revisionId: params.revisionId,
+            approvalScope: body.approvalScope,
+            decision: body.decision,
+            decidedBy: body.decidedBy,
+            actorId: body.actorId,
+            reason: body.reason,
+            evidenceReferences: body.evidenceReferences,
+            ...(body.policyVersion === undefined ? {} : { policyVersion: body.policyVersion }),
+            ...(body.decisionRule === undefined ? {} : { decisionRule: body.decisionRule }),
+            createdAt: new Date(),
+          });
+          return reply.code(201).send(decision);
+        },
+      );
+    },
+  );
+
+  /**
+   * Approval evidence is the recorded decision events of one revision: the
+   * derived approval state is not stored, only the decisions it is derived from.
+   */
+  app.get(
+    "/change-sets/:changeSetId/revisions/:revisionId/review-decisions",
+    async (request, reply) => {
+      const params = z
+        .object({ changeSetId: z.string().min(1), revisionId: z.string().min(1) })
+        .parse(request.params);
+      const revision = await changeSetRevisions.getRevision({
+        changeSetId: params.changeSetId,
+        revisionId: params.revisionId,
+      });
+      if (!revision) {
+        return reply.code(404).send({ error: "Change Set Revision not found" });
+      }
+      return pipeline.execute(
+        routeContracts.approvalEvidence,
+        routeBoundaryContext(request, revision.novelId),
+        routeBoundaryInput(request),
+        async () => {
+          const decisions = await reviewDecisions.listForRevision({
+            changeSetId: params.changeSetId,
+            revisionId: params.revisionId,
+          });
+          return reply.code(200).send(decisions);
         },
       );
     },

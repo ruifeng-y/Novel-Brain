@@ -11,6 +11,7 @@ import { createInMemoryNarrativeProposalPersistence } from "../story/application
 import { createInMemoryRunOrchestrationPersistence } from "../production/application/runPlanPersistence";
 import { createInMemoryChangeSetPersistence } from "../production/application/changeSetPersistence";
 import { createInMemoryValidationRunStore } from "./validationRunService";
+import { createInMemoryReviewDecisionStore } from "./reviewDecisionService";
 import { createInMemoryAttentionDispositionPersistence } from "../recall/attention/attentionDispositionPersistence";
 import { createInMemoryDependencyImpactPersistence } from "../dependency/application/dependencyImpactPersistence";
 import { createNovelBrainServer } from "../http/server";
@@ -31,6 +32,7 @@ export function createInMemoryEngineDependencies(): ApiDependencies {
     narrativeCommits: commitTransaction.narrativeCommits,
     changeSets: createInMemoryChangeSetPersistence().changeSets,
     validations: createInMemoryValidationRunStore(),
+    reviews: createInMemoryReviewDecisionStore(),
     eventStore: commitTransaction.eventStore,
     runtime: new DeterministicRuntime(),
     commitTransaction,

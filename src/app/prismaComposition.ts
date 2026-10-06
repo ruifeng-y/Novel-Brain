@@ -26,6 +26,7 @@ import { createPrismaNarrativeProposalPersistence } from "../story/application/n
 import { createPrismaRunOrchestrationPersistence } from "../production/application/runPlanPersistence";
 import { createPrismaChangeSetPersistence } from "../production/application/changeSetPersistence";
 import { createPrismaValidationRunStore } from "./validationRunService";
+import { createPrismaReviewDecisionStore } from "./reviewDecisionService";
 import { createPrismaAttentionDispositionPersistence } from "../recall/attention/attentionDispositionPersistence";
 import { createPrismaDependencyImpactPersistence } from "../dependency/application/dependencyImpactPersistence";
 
@@ -109,6 +110,7 @@ export function createPrismaEngineDependencies(prisma: PrismaClient): ApiDepende
     ),
     changeSets: createPrismaChangeSetPersistence(prisma).changeSets,
     validations: createPrismaValidationRunStore(prisma),
+    reviews: createPrismaReviewDecisionStore(prisma),
     eventStore: new PrismaEventStore(prisma),
     runtime: new DeterministicRuntime(),
     commitTransaction,
