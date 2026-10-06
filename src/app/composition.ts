@@ -10,6 +10,7 @@ import { DeterministicFoundationRuntime } from "../production/runtime/determinis
 import { createInMemoryNarrativeProposalPersistence } from "../story/application/narrativeProposalPersistence";
 import { createInMemoryRunOrchestrationPersistence } from "../production/application/runPlanPersistence";
 import { createInMemoryChangeSetPersistence } from "../production/application/changeSetPersistence";
+import { createInMemoryValidationRunStore } from "./validationRunService";
 import { createInMemoryAttentionDispositionPersistence } from "../recall/attention/attentionDispositionPersistence";
 import { createInMemoryDependencyImpactPersistence } from "../dependency/application/dependencyImpactPersistence";
 import { createNovelBrainServer } from "../http/server";
@@ -29,6 +30,7 @@ export function createInMemoryEngineDependencies(): ApiDependencies {
     stateRecords: commitTransaction.stateRecords,
     narrativeCommits: commitTransaction.narrativeCommits,
     changeSets: createInMemoryChangeSetPersistence().changeSets,
+    validations: createInMemoryValidationRunStore(),
     eventStore: commitTransaction.eventStore,
     runtime: new DeterministicRuntime(),
     commitTransaction,

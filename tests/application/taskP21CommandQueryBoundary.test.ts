@@ -23,10 +23,14 @@ const expectedOperationIds = {
     ],
   },
   validation: {
-    commands: ["validation.command.validate-candidate"],
+    commands: [
+      "validation.command.validate-candidate",
+      "validation.command.run-validation",
+    ],
     queries: [
       "validation.query.validation-outcome",
       "validation.query.validation-evidence",
+      "validation.query.validation-run",
     ],
   },
   approval: {

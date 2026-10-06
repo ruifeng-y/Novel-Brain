@@ -20,6 +20,11 @@ import { createSceneReadQuery } from "../app/sceneReadQuery";
 import { createTargetSpanResolutionQuery } from "../app/targetSpanResolutionQuery";
 import { createChangeSetRevisionService } from "../app/changeSetRevisionService";
 import { createChangeSetDiffQuery } from "../app/changeSetDiffQuery";
+import {
+  createValidationRunService,
+  ValidationBindingError,
+  type ValidationRunStore,
+} from "../app/validationRunService";
 import type { FoundationWorkspaceFocus } from "../story/application/foundationWorkspaceContract";
 import type { FoundationGenerationOptions } from "../story/application/foundationEntryService";
 import {
@@ -86,6 +91,7 @@ export interface ApiDependencies {
   readonly stateRecords: RevisionedRepository<StateRecord>;
   readonly narrativeCommits: Repository<NarrativeCommit>;
   readonly changeSets: ChangeSetRevisionRepository;
+  readonly validations: ValidationRunStore;
   readonly eventStore: EventStore;
   readonly runtime: RuntimeAdapter;
   readonly commitTransaction: CommitChangeSetRevisionTransaction;
@@ -244,6 +250,13 @@ const changeSetDiffRequestSchema = z.object({
   toRevisionId: z.string().min(1),
 });
 
+const runValidationRequestSchema = z.object({
+  validationId: z.string().min(1),
+  planVersionId: z.string().min(1),
+  candidateId: z.string().min(1),
+  mustPreserve: z.array(z.string()).default([]),
+});
+
 /**
  * Each route binds to a real production API boundary contract. The manuscript
  * scene route has no dedicated contract in the frozen application boundary, so
@@ -257,6 +270,8 @@ const routeContracts = {
   commitChangeSetRevision: "commit.command.commit-change-set-revision",
   createChangeSetRevision: "commit.command.create-change-set-revision",
   changeSetRevisionDiff: "commit.query.change-set-revision-diff",
+  runValidation: "validation.command.run-validation",
+  validationRun: "validation.query.validation-run",
   listNovelEvents: "commit.query.commit-evidence",
   workspaceFocus: "foundation.query.workspace-focus",
   focusResolution: "workspace.query.focus-resolution",
@@ -358,6 +373,11 @@ export function registerNovelBrainRoutes(
     if (error instanceof z.ZodError) {
       return reply.code(400).send({ error: "Bad Request", details: error.issues });
     }
+    if (error instanceof ValidationBindingError) {
+      return reply
+        .code(409)
+        .send({ error: "Validation Binding Conflict", reason: error.message });
+    }
     if (isCommitConflictError(error)) {
       return reply.code(409).send({
         error: "Commit Conflict",
@@ -397,6 +417,12 @@ export function registerNovelBrainRoutes(
   const targetSpanResolution = createTargetSpanResolutionQuery({ scenes: dependencies.scenes });
   const changeSetRevisions = createChangeSetRevisionService({ changeSets: dependencies.changeSets });
   const changeSetDiff = createChangeSetDiffQuery({ changeSets: dependencies.changeSets });
+  const validationRuns = createValidationRunService({
+    changeSets: dependencies.changeSets,
+    validations: dependencies.validations,
+    scenes: dependencies.scenes,
+    candidates: dependencies.candidates,
+  });
 
   app.post("/novels", async (request, reply) => {
     const identity = novelBodyIdentitySchema.parse(request.body);
@@ -698,6 +724,81 @@ export function registerNovelBrainRoutes(
       },
     );
   });
+
+  /**
+   * Validation is a stage the author performs before deciding to commit: the
+   * run is persisted on its own, binds to the addressed Change Set Revision,
+   * and can be read back without any commit having happened. The authorization
+   * resource is the workspace of the revision actually validated.
+   */
+  app.post(
+    "/change-sets/:changeSetId/revisions/:revisionId/validation-runs",
+    async (request, reply) => {
+      const params = z
+        .object({ changeSetId: z.string().min(1), revisionId: z.string().min(1) })
+        .parse(request.params);
+      const body = runValidationRequestSchema.parse(request.body);
+      const revision = await changeSetRevisions.getRevision({
+        changeSetId: params.changeSetId,
+        revisionId: params.revisionId,
+      });
+      if (!revision) {
+        return reply.code(404).send({ error: "Change Set Revision not found" });
+      }
+      const candidate = await dependencies.candidates.findById(body.candidateId);
+      if (!candidate) return reply.code(404).send({ error: "Not Found" });
+      return pipeline.execute(
+        routeContracts.runValidation,
+        routeBoundaryContext(request, revision.novelId),
+        routeBoundaryInput(request),
+        async () => {
+          const run = await validationRuns.runValidation({
+            changeSetId: params.changeSetId,
+            revisionId: params.revisionId,
+            validationId: body.validationId,
+            planVersionId: body.planVersionId,
+            candidateId: body.candidateId,
+            mustPreserve: body.mustPreserve,
+            createdAt: new Date(),
+          });
+          return reply.code(201).send(run);
+        },
+      );
+    },
+  );
+
+  app.get(
+    "/change-sets/:changeSetId/revisions/:revisionId/validation-runs/:validationId",
+    async (request, reply) => {
+      const params = z
+        .object({
+          changeSetId: z.string().min(1),
+          revisionId: z.string().min(1),
+          validationId: z.string().min(1),
+        })
+        .parse(request.params);
+      const revision = await changeSetRevisions.getRevision({
+        changeSetId: params.changeSetId,
+        revisionId: params.revisionId,
+      });
+      if (!revision) {
+        return reply.code(404).send({ error: "Change Set Revision not found" });
+      }
+      return pipeline.execute(
+        routeContracts.validationRun,
+        routeBoundaryContext(request, revision.novelId),
+        routeBoundaryInput(request),
+        async () => {
+          const run = await validationRuns.getValidation({
+            validationId: params.validationId,
+            revisionId: params.revisionId,
+          });
+          if (!run) return reply.code(404).send({ error: "Validation Run not found" });
+          return reply.code(200).send(run);
+        },
+      );
+    },
+  );
 
   app.get("/novels/:novelId/events", async request => {
     const novelId = requiredPathParameter(request, "novelId");

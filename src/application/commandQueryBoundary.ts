@@ -93,6 +93,13 @@ export const applicationCapabilityBoundaries = {
         effect: "mutation",
         resultChannel: "command-result",
       },
+      {
+        id: "validation.command.run-validation",
+        capability: "validation",
+        kind: "command",
+        effect: "mutation",
+        resultChannel: "command-result",
+      },
     ],
     queries: [
       {
@@ -104,6 +111,13 @@ export const applicationCapabilityBoundaries = {
       },
       {
         id: "validation.query.validation-evidence",
+        capability: "validation",
+        kind: "query",
+        effect: "read",
+        resultChannel: "query-result",
+      },
+      {
+        id: "validation.query.validation-run",
         capability: "validation",
         kind: "query",
         effect: "read",
